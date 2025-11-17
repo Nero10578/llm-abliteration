@@ -171,6 +171,8 @@ def ablate_by_layers_sharded(
     measures: dict,
     marching_orders: list,
     output_path: str,
+    ablate_individual_experts: bool = False,
+    expert_subset: list = None,
 ) -> None:
     """
     Memory-efficient ablation for sharded models.
@@ -214,16 +216,29 @@ def ablate_by_layers_sharded(
     # Detect model architecture and find layer prefix
     layer_prefix = None
     is_moe = False
+    expert_count = 0
     
     # Check for MoE architecture first
     for key in weight_map.keys():
         if ".layers." in key and ".self_attn." in key:
             layer_prefix = key.split(".layers.")[0]
             # Check if this is MoE by looking for expert patterns
-            if any(".mlp.experts." in k for k in weight_map.keys()):
+            expert_keys = [k for k in weight_map.keys() if ".mlp.experts." in k]
+            if expert_keys:
                 is_moe = True
+                # Extract expert count from the first expert key
+                first_expert_key = expert_keys[0]
+                parts = first_expert_key.split(".mlp.experts.")
+                if len(parts) > 1:
+                    expert_part = parts[1].split(".")[0]
+                    try:
+                        expert_count = int(expert_part) + 1  # +1 because it's 0-indexed
+                    except ValueError:
+                        pass
             print(f"Detected layer prefix: {layer_prefix}")
             print(f"MoE architecture: {is_moe}")
+            if is_moe:
+                print(f"Detected {expert_count} experts per layer")
             break
     
     if layer_prefix is None:
@@ -240,6 +255,7 @@ def ablate_by_layers_sharded(
             # For MoE models, we need to handle multiple down_proj patterns:
             # 1. Shared experts down_proj
             # 2. Individual expert down_proj (optional - usually too many to modify all)
+            # 3. Expert routing gate
             shared_down_proj_pattern = f"{layer_prefix}.layers.{layer}.mlp.shared_experts.down_proj.weight"
             gate_proj_pattern = f"{layer_prefix}.layers.{layer}.mlp.gate.weight"  # Expert routing gate
             
@@ -249,6 +265,26 @@ def ablate_by_layers_sharded(
                     if shard_file not in shard_modifications:
                         shard_modifications[shard_file] = []
                     shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))
+            
+            # Optionally ablate individual experts
+            if ablate_individual_experts and expert_subset is None:
+                expert_subset = list(range(expert_count))  # Ablate all experts
+            
+            if ablate_individual_experts and expert_subset:
+                for expert_idx in expert_subset:
+                    if expert_idx >= expert_count:
+                        print(f"Warning: Expert {expert_idx} not found (max: {expert_count-1})")
+                        continue
+                    
+                    expert_down_proj_pattern = f"{layer_prefix}.layers.{layer}.mlp.experts.{expert_idx}.down_proj.weight"
+                    expert_gate_proj_pattern = f"{layer_prefix}.layers.{layer}.mlp.experts.{expert_idx}.gate_proj.weight"
+                    expert_up_proj_pattern = f"{layer_prefix}.layers.{layer}.mlp.experts.{expert_idx}.up_proj.weight"
+                    
+                    for key, shard_file in weight_map.items():
+                        if key in [expert_down_proj_pattern, expert_gate_proj_pattern, expert_up_proj_pattern]:
+                            if shard_file not in shard_modifications:
+                                shard_modifications[shard_file] = []
+                            shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))
         else:
             # Standard transformer architecture
             down_proj_pattern = f"{layer_prefix}.layers.{layer}.mlp.down_proj.weight"
@@ -300,12 +336,23 @@ def ablate_by_layers_sharded(
                     # Normalize
                     refusal_dir = torch.nn.functional.normalize(refusal_dir, dim=-1)
                     
-                    # Apply modification
-                    state_dict[key] = modify_tensor_norm_preserved(
-                        state_dict[key],
-                        refusal_dir,
-                        scale,
-                    ).contiguous()
+                    # Determine if this is an expert gate for MoE handling
+                    is_expert_gate = is_moe and ".mlp.gate.weight" in key
+                    
+                    # Apply modification with MoE awareness
+                    if is_moe:
+                        state_dict[key] = modify_tensor_norm_preserved_moe(
+                            state_dict[key],
+                            refusal_dir,
+                            scale,
+                            is_expert_gate=is_expert_gate,
+                        ).contiguous()
+                    else:
+                        state_dict[key] = modify_tensor_norm_preserved(
+                            state_dict[key],
+                            refusal_dir,
+                            scale,
+                        ).contiguous()
                     
                     # Clean up
                     del refusal_dir, harmless_dir, harmless_normalized, refined_refusal_dir
@@ -367,7 +414,28 @@ def main():
         help='Path to a YAML configuration file',
     )
     
+    parser.add_argument(
+        '--ablate-individual-experts',
+        action='store_true',
+        help='Ablate individual experts in MoE models (can be very memory intensive)',
+    )
+    
+    parser.add_argument(
+        '--expert-subset',
+        type=str,
+        help='Comma-separated list of expert indices to ablate (e.g., "0,1,2,3")',
+    )
+    
     args = parser.parse_args()
+    
+    # Parse expert subset if provided
+    expert_subset = None
+    if args.expert_subset:
+        try:
+            expert_subset = [int(x.strip()) for x in args.expert_subset.split(',')]
+        except ValueError:
+            print("Error: Expert subset must be comma-separated integers")
+            return
     
     # Load YAML configuration
     with open(args.file_path, 'r') as file:
@@ -378,6 +446,15 @@ def main():
     output_dir = ydata.get("output")
     ablations = ydata.get("ablate")
     
+    # MoE-specific options
+    ablate_individual_experts = ydata.get("ablate_individual_experts", False)
+    if args.ablate_individual_experts:
+        ablate_individual_experts = True
+    
+    expert_subset_config = ydata.get("expert_subset", None)
+    if expert_subset_config is not None:
+        expert_subset = expert_subset_config
+    
     print("=" * 60)
     print("SHARDED ABLATION CONFIGURATION")
     print("=" * 60)
@@ -385,6 +462,9 @@ def main():
     print(f"Measurements: {measurement_file}")
     print(f"Output directory: {output_dir}")
     print(f"Number of ablations: {len(ablations)}")
+    print(f"Ablate individual experts: {ablate_individual_experts}")
+    if expert_subset:
+        print(f"Expert subset: {expert_subset}")
     print("=" * 60)
     
     # Load measurements
@@ -416,6 +496,8 @@ def main():
         measures=measures,
         marching_orders=orders,
         output_path=output_dir,
+        ablate_individual_experts=ablate_individual_experts,
+        expert_subset=expert_subset,
     )
     
     print("\n" + "=" * 60)

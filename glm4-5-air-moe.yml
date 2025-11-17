@@ -1,0 +1,119 @@
+# GLM-4.5-Air MoE Abliteration Configuration
+model: "/home/arli/models/GLM-4.5-Air"
+measurements: glm4_measurements.refuse
+output: glm4-abliterated
+
+# MoE-specific options
+ablate_individual_experts: false  # Set to true to ablate individual experts (memory intensive)
+expert_subset: null  # Optional: [0, 1, 2, 3] to abliterate specific experts only
+
+# Abliteration layers - focus on middle to late layers for MoE models
+# GLM-4.5-Air has 46 layers, so we target layers 20-45
+ablate:
+  # Middle layers - often contain strong refusal signals
+  - layer: 20
+    measurement: 35
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 21
+    measurement: 35
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 22
+    measurement: 35
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 23
+    measurement: 35
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 24
+    measurement: 35
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 25
+    measurement: 35
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 26
+    measurement: 35
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 27
+    measurement: 35
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 28
+    measurement: 35
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 29
+    measurement: 35
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 30
+    measurement: 35
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 31
+    measurement: 35
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 32
+    measurement: 35
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 33
+    measurement: 35
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 34
+    measurement: 35
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 35
+    measurement: 35
+    scale: 1.0
+    sparsity: 0.00
+  
+  # Late layers - often contain final refusal decisions
+  - layer: 36
+    measurement: 40
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 37
+    measurement: 40
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 38
+    measurement: 40
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 39
+    measurement: 40
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 40
+    measurement: 40
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 41
+    measurement: 40
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 42
+    measurement: 40
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 43
+    measurement: 40
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 44
+    measurement: 40
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 45
+    measurement: 40
+    scale: 1.0
+    sparsity: 0.00
