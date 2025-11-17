@@ -90,6 +90,82 @@ def modify_tensor_norm_preserved(
     return result.detach().clone()
 
 
+def modify_tensor_norm_preserved_moe(
+    W: torch.Tensor, refusal_dir: torch.Tensor, scale_factor: float = 1.0,
+    is_expert_gate: bool = False,
+) -> torch.Tensor:
+    """
+    Modify weight tensor by ablating refusal direction while preserving row norms.
+    Special handling for MoE expert gates.
+    Returns a plain tensor (not a Parameter).
+    """
+    original_dtype = W.dtype
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    with torch.no_grad():
+        # Move tensors for computation
+        # Transpose here to convert from safetensors convention
+        W_gpu = W.to(device, dtype=torch.float32, non_blocking=True).T
+        refusal_dir_gpu = refusal_dir.to(device, dtype=torch.float32, non_blocking=True)
+        
+        # Ensure refusal_dir is a 1-dimensional tensor
+        if refusal_dir_gpu.dim() > 1:
+            refusal_dir_gpu = refusal_dir_gpu.view(-1)
+        
+        # Normalize refusal direction
+        refusal_normalized = torch.nn.functional.normalize(refusal_dir_gpu, dim=0)
+        
+        if is_expert_gate:
+            # For expert gates, we use a more conservative approach
+            # Expert gates determine routing, so we want to be more subtle
+            scale_factor = scale_factor * 0.5  # Reduce intensity for gates
+            
+            # For gates, we modify the routing probabilities rather than weights
+            # Apply a smaller perturbation to avoid breaking expert selection
+            W_norm = torch.norm(W_gpu, dim=1, keepdim=True)
+            W_direction = torch.nn.functional.normalize(W_gpu, dim=1)
+            
+            # Compute dot product with refusal direction
+            projection = torch.matmul(W_direction, refusal_normalized)
+            
+            # Apply reduced modification
+            W_direction_new = W_direction - scale_factor * torch.outer(projection, refusal_normalized)
+            
+            # Re-normalize
+            W_direction_new = torch.nn.functional.normalize(W_direction_new, dim=1)
+            W_modified = W_norm * W_direction_new
+        else:
+            # Standard weight modification for shared experts and attention
+            W_norm = torch.norm(W_gpu, dim=1, keepdim=True)  # [out_features, 1]
+            W_direction = torch.nn.functional.normalize(W_gpu, dim=1)  # normalized per output neuron
+            
+            # Apply abliteration to the DIRECTIONAL component
+            projection = torch.matmul(W_direction, refusal_normalized)  # [in_features]
+            
+            # Subtract the projection
+            W_direction_new = W_direction - scale_factor * torch.outer(projection, refusal_normalized)
+            
+            # Re-normalize the adjusted direction
+            W_direction_new = torch.nn.functional.normalize(W_direction_new, dim=1)
+            
+            # Recombine: keep original magnitude, use new direction
+            W_modified = W_norm * W_direction_new
+        
+        # Convert back to original dtype and CPU
+        # Transpose here to return safetensors convention
+        result = W_modified.T.to('cpu', dtype=original_dtype, non_blocking=True)
+        
+        # Cleanup
+        del W_gpu, refusal_dir_gpu, refusal_normalized
+        del W_direction, W_direction_new, W_norm, projection, W_modified
+        
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+    
+    return result.detach().clone()
+
+
 def ablate_by_layers_sharded(
     model_name: str,
     measures: dict,
@@ -135,12 +211,19 @@ def ablate_by_layers_sharded(
     
     weight_map = index["weight_map"]
     
-    # Find layer prefix
+    # Detect model architecture and find layer prefix
     layer_prefix = None
+    is_moe = False
+    
+    # Check for MoE architecture first
     for key in weight_map.keys():
         if ".layers." in key and ".self_attn." in key:
             layer_prefix = key.split(".layers.")[0]
+            # Check if this is MoE by looking for expert patterns
+            if any(".mlp.experts." in k for k in weight_map.keys()):
+                is_moe = True
             print(f"Detected layer prefix: {layer_prefix}")
+            print(f"MoE architecture: {is_moe}")
             break
     
     if layer_prefix is None:
@@ -152,14 +235,30 @@ def ablate_by_layers_sharded(
     for layer, measurement, scale, sparsity in marching_orders:
         # Build the key patterns for this layer
         o_proj_pattern = f"{layer_prefix}.layers.{layer}.self_attn.o_proj.weight"
-        down_proj_pattern = f"{layer_prefix}.layers.{layer}.mlp.down_proj.weight"
         
-        # Find keys that match
-        for key, shard_file in weight_map.items():
-            if key == o_proj_pattern or key == down_proj_pattern:
-                if shard_file not in shard_modifications:
-                    shard_modifications[shard_file] = []
-                shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))
+        if is_moe:
+            # For MoE models, we need to handle multiple down_proj patterns:
+            # 1. Shared experts down_proj
+            # 2. Individual expert down_proj (optional - usually too many to modify all)
+            shared_down_proj_pattern = f"{layer_prefix}.layers.{layer}.mlp.shared_experts.down_proj.weight"
+            gate_proj_pattern = f"{layer_prefix}.layers.{layer}.mlp.gate.weight"  # Expert routing gate
+            
+            # Find keys that match
+            for key, shard_file in weight_map.items():
+                if key == o_proj_pattern or key == shared_down_proj_pattern or key == gate_proj_pattern:
+                    if shard_file not in shard_modifications:
+                        shard_modifications[shard_file] = []
+                    shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))
+        else:
+            # Standard transformer architecture
+            down_proj_pattern = f"{layer_prefix}.layers.{layer}.mlp.down_proj.weight"
+            
+            # Find keys that match
+            for key, shard_file in weight_map.items():
+                if key == o_proj_pattern or key == down_proj_pattern:
+                    if shard_file not in shard_modifications:
+                        shard_modifications[shard_file] = []
+                    shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))
     
     print(f"\nWill modify {len(shard_modifications)} shards out of {len(set(weight_map.values()))} total")
     
