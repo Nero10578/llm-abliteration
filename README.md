@@ -26,11 +26,14 @@ Removal of the projected contribution during measurement is optional, but the ot
 This repository now supports Mixture of Experts models like GLM-4.5-Air. For MoE architectures, abliteration is automatically applied to:
 - Attention output projections (`self_attn.o_proj.weight`)
 - Standard MLP down projections (`mlp.down_proj.weight`, if present)
-- **Expert down projections** (`mlp.experts.[i].down_proj.weight`)
-- **Shared expert down projections** (`mlp.shared_experts.down_proj.weight`)
+- **All expert projections** (`mlp.experts.[i].gate_proj.weight`, `up_proj.weight`, `down_proj.weight`)
+- **All shared expert projections** (`mlp.shared_experts.gate_proj.weight`, `up_proj.weight`, `down_proj.weight`)
 - **Routing gate weights** (`mlp.gate.weight`) - **Critical for MoE models!**
 
-The routing gate determines which experts are activated. Ablating it prevents the model from routing to "refusal experts" even if expert weights are modified.
+**Why comprehensive ablation matters for MoE:**
+- Refusal behavior can be encoded in any expert projection (gate, up, or down)
+- The routing gate determines which experts activate - ablating it prevents routing to "refusal experts"
+- MoE models require more aggressive ablation than dense models due to expert specialization
 
 See [`glm4-air-example.yml`](glm4-air-example.yml) for an example configuration.
 

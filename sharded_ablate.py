@@ -203,12 +203,12 @@ def ablate_by_layers_sharded(
                 if shard_file not in shard_modifications:
                     shard_modifications[shard_file] = []
                 shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))
-            # MoE expert patterns (e.g., mlp.experts.0.down_proj.weight, mlp.experts.1.down_proj.weight, etc.)
+            # MoE expert patterns - only down_proj (like dense models)
             elif key.startswith(experts_down_proj_prefix) and key.endswith(".down_proj.weight"):
                 if shard_file not in shard_modifications:
                     shard_modifications[shard_file] = []
                 shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))
-            # MoE shared experts pattern
+            # MoE shared experts - only down_proj
             elif key == shared_experts_down_proj:
                 if shard_file not in shard_modifications:
                     shard_modifications[shard_file] = []

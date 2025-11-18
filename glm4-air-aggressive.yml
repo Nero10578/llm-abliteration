@@ -1,0 +1,148 @@
+# Aggressive configuration for GLM-4.5-Air MoE model
+# Use this if standard ablation doesn't work
+# 
+# Changes from standard config:
+# 1. More layers (10-35 instead of 15-25)
+# 2. Higher scale (2.0 instead of 1.0)
+# 3. Uses layer 18's strong refusal signal
+
+model: /home/arli/models/GLM-4.5-Air
+measurements: GLM.refuse
+output: glm4-air-abliterated-aggressive
+
+# Aggressive ablation strategy:
+# - Wider layer range (26 layers instead of 11)
+# - Higher scale factor (2.0 for stronger ablation)
+# - Covers more of the model to handle distributed refusal in MoE
+ablate:
+  # Early layers (10-14) - moderate scale
+  - layer: 10
+    measurement: 18
+    scale: 1.5
+    sparsity: 0.00
+  - layer: 11
+    measurement: 18
+    scale: 1.5
+    sparsity: 0.00
+  - layer: 12
+    measurement: 18
+    scale: 1.5
+    sparsity: 0.00
+  - layer: 13
+    measurement: 18
+    scale: 1.5
+    sparsity: 0.00
+  - layer: 14
+    measurement: 18
+    scale: 1.5
+    sparsity: 0.00
+  
+  # Core layers (15-25) - high scale (strongest signal)
+  - layer: 15
+    measurement: 18
+    scale: 2.0
+    sparsity: 0.00
+  - layer: 16
+    measurement: 18
+    scale: 2.0
+    sparsity: 0.00
+  - layer: 17
+    measurement: 18
+    scale: 2.0
+    sparsity: 0.00
+  - layer: 18
+    measurement: 18
+    scale: 2.0
+    sparsity: 0.00
+  - layer: 19
+    measurement: 18
+    scale: 2.0
+    sparsity: 0.00
+  - layer: 20
+    measurement: 18
+    scale: 2.0
+    sparsity: 0.00
+  - layer: 21
+    measurement: 18
+    scale: 2.0
+    sparsity: 0.00
+  - layer: 22
+    measurement: 18
+    scale: 2.0
+    sparsity: 0.00
+  - layer: 23
+    measurement: 18
+    scale: 2.0
+    sparsity: 0.00
+  - layer: 24
+    measurement: 18
+    scale: 2.0
+    sparsity: 0.00
+  - layer: 25
+    measurement: 18
+    scale: 2.0
+    sparsity: 0.00
+  
+  # Extended layers (26-35) - moderate scale
+  - layer: 26
+    measurement: 18
+    scale: 1.5
+    sparsity: 0.00
+  - layer: 27
+    measurement: 18
+    scale: 1.5
+    sparsity: 0.00
+  - layer: 28
+    measurement: 18
+    scale: 1.5
+    sparsity: 0.00
+  - layer: 29
+    measurement: 18
+    scale: 1.5
+    sparsity: 0.00
+  - layer: 30
+    measurement: 18
+    scale: 1.5
+    sparsity: 0.00
+  - layer: 31
+    measurement: 18
+    scale: 1.5
+    sparsity: 0.00
+  - layer: 32
+    measurement: 18
+    scale: 1.5
+    sparsity: 0.00
+  - layer: 33
+    measurement: 18
+    scale: 1.5
+    sparsity: 0.00
+  - layer: 34
+    measurement: 18
+    scale: 1.5
+    sparsity: 0.00
+  - layer: 35
+    measurement: 18
+    scale: 1.5
+    sparsity: 0.00
+
+# Why this might work better for MoE:
+# 
+# 1. MORE LAYERS (10-35 vs 15-25):
+#    - MoE models may distribute refusal across more layers
+#    - Different experts in different layers may specialize in refusals
+#    - Wider coverage ensures we catch distributed patterns
+#
+# 2. HIGHER SCALE (2.0 vs 1.0):
+#    - MoE combines multiple expert outputs
+#    - Weak ablation (1.0) might be overcome by expert combination
+#    - Stronger ablation (2.0) ensures refusal direction is removed
+#
+# 3. GRADUATED SCALE:
+#    - Highest scale (2.0) for core layers with strongest signal (15-25)
+#    - Moderate scale (1.5) for surrounding layers
+#    - Prevents over-ablation while ensuring effectiveness
+#
+# If this still doesn't work, the issue might be:
+# - Routing gate ablation method is wrong
+# - Shared experts dominate and need different treatment
+# - Measurements didn't capture MoE refusal patterns correctly
