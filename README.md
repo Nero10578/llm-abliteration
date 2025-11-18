@@ -119,6 +119,24 @@ You can use the auto-generated config from the previous step, or manually create
 Look at the example YAML files to see how this is structured.
 YAML was opted for in order to allow more than one source layer for refusal direction measurement, and for different strategies to be applied per destination layer.
 
+### Convert abliteration to LoRA adapter (recommended!)
+
+```shell
+python ablation_to_lora.py \
+    --original <path_to_original_model> \
+    --abliterated <path_to_abliterated_model> \
+    --output <path_to_lora_adapter> \
+    --rank 64
+```
+
+**Why use LoRA?**
+- **99% smaller** than full model (400 MB vs 50 GB)
+- **Reversible** - keep original model unchanged
+- **Easy to share** - upload to HuggingFace
+- **Combinable** - stack with other LoRAs
+
+See [`LORA_CONVERSION_GUIDE.md`](LORA_CONVERSION_GUIDE.md) for detailed instructions.
+
 ### Chat with your abliterated model
 
 ```shell
