@@ -157,6 +157,7 @@ def ablate_by_layers_sharded(
         # MoE-specific patterns for GLM-4.5-Air and similar architectures
         experts_down_proj_prefix = f"{layer_prefix}.layers.{layer}.mlp.experts."
         shared_experts_down_proj = f"{layer_prefix}.layers.{layer}.mlp.shared_experts.down_proj.weight"
+        gate_pattern = f"{layer_prefix}.layers.{layer}.mlp.gate.weight"  # MoE routing gate
         
         # Find keys that match
         for key, shard_file in weight_map.items():
@@ -172,6 +173,11 @@ def ablate_by_layers_sharded(
                 shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))
             # MoE shared experts pattern
             elif key == shared_experts_down_proj:
+                if shard_file not in shard_modifications:
+                    shard_modifications[shard_file] = []
+                shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))
+            # MoE routing gate - CRITICAL for preventing refusal routing
+            elif key == gate_pattern:
                 if shard_file not in shard_modifications:
                     shard_modifications[shard_file] = []
                 shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))

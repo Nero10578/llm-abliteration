@@ -28,6 +28,9 @@ This repository now supports Mixture of Experts models like GLM-4.5-Air. For MoE
 - Standard MLP down projections (`mlp.down_proj.weight`, if present)
 - **Expert down projections** (`mlp.experts.[i].down_proj.weight`)
 - **Shared expert down projections** (`mlp.shared_experts.down_proj.weight`)
+- **Routing gate weights** (`mlp.gate.weight`) - **Critical for MoE models!**
+
+The routing gate determines which experts are activated. Ablating it prevents the model from routing to "refusal experts" even if expert weights are modified.
 
 See [`glm4-air-example.yml`](glm4-air-example.yml) for an example configuration.
 

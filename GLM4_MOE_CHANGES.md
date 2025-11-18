@@ -100,13 +100,18 @@ For MoE models, we should ablate:
 1. **Attention output projection** (`o_proj`) - Same as current
 2. **Expert down projections** (`experts.[i].down_proj`) - NEW
 3. **Shared expert down projections** (`shared_experts.down_proj`) - NEW
-4. **Standard MLP down projection** (`mlp.down_proj`) - Current (if exists)
+4. **Routing gate weights** (`mlp.gate.weight`) - **CRITICAL for MoE!**
+5. **Standard MLP down projection** (`mlp.down_proj`) - Current (if exists)
+
+**Why the routing gate is critical:**
+The routing gate determines which experts are activated for each token. Even if we ablate all expert weights, the gate could still route tokens to "refusal patterns" learned in the routing logic itself. By ablating the gate weights, we prevent the model from selectively activating experts based on refusal-related features.
 
 ### Weight Pattern Matching Strategy
-Use regex patterns to match:
-- `.*\.mlp\.down_proj\.weight$` (standard)
-- `.*\.mlp\.experts\.\d+\.down_proj\.weight$` (experts)
-- `.*\.mlp\.shared_experts\.down_proj\.weight$` (shared experts)
+Use exact patterns to match:
+- `.*\.mlp\.down_proj\.weight$` (standard MLP)
+- `.*\.mlp\.experts\.\d+\.down_proj\.weight$` (expert down projections)
+- `.*\.mlp\.shared_experts\.down_proj\.weight$` (shared expert down projections)
+- `.*\.mlp\.gate\.weight$` (routing gate - **CRITICAL**)
 
 ## Testing Checklist
 - [ ] Verify model loads correctly
