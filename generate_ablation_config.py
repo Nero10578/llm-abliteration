@@ -5,6 +5,10 @@ Automated YAML configuration generator for abliteration based on analysis result
 This script analyzes the refusal measurements and automatically generates an optimized
 YAML configuration file for ablation, selecting the best layers based on signal quality.
 
+Automatically detects MoE models and applies appropriate settings:
+- MoE models: More layers, higher scale (2.0 core, 1.5 extended)
+- Dense models: Fewer layers, standard scale (1.0)
+
 Usage:
     python generate_ablation_config.py -m measurements.refuse -o config.yml --model-path /path/to/model
     
@@ -26,6 +30,7 @@ import torch
 import yaml
 from pathlib import Path
 from typing import List, Tuple, Dict
+from transformers import AutoConfig
 
 
 def compute_signal_quality(
@@ -116,6 +121,7 @@ def select_layers(
     mode: str = 'balanced',
     min_quality: float = 0.015,
     top_n: int = None,
+    is_moe: bool = False,
 ) -> Tuple[List[int], int]:
     """
     Select layers for ablation based on signal quality.
@@ -125,16 +131,24 @@ def select_layers(
         mode: 'conservative', 'balanced', or 'aggressive'
         min_quality: Minimum signal quality threshold
         top_n: Maximum number of layers to select (None = use mode defaults)
+        is_moe: Whether this is a MoE model (affects defaults)
     
     Returns:
         Tuple of (selected_layer_indices, best_measurement_layer)
     """
-    # Mode-specific defaults
-    mode_configs = {
-        'conservative': {'min_quality': 0.025, 'top_n': 8},
-        'balanced': {'min_quality': 0.015, 'top_n': 12},
-        'aggressive': {'min_quality': 0.010, 'top_n': 20},
-    }
+    # Mode-specific defaults - MoE models need more layers
+    if is_moe:
+        mode_configs = {
+            'conservative': {'min_quality': 0.015, 'top_n': 16},
+            'balanced': {'min_quality': 0.006, 'top_n': 26},  # Lower threshold to capture more layers
+            'aggressive': {'min_quality': 0.004, 'top_n': 36},
+        }
+    else:
+        mode_configs = {
+            'conservative': {'min_quality': 0.025, 'top_n': 8},
+            'balanced': {'min_quality': 0.015, 'top_n': 12},
+            'aggressive': {'min_quality': 0.010, 'top_n': 20},
+        }
     
     if mode in mode_configs:
         config = mode_configs[mode]
@@ -170,6 +184,7 @@ def generate_yaml_config(
     scale: float = 1.0,
     sparsity: float = 0.0,
     scale_decay: bool = True,
+    is_moe: bool = False,
 ) -> None:
     """
     Generate YAML configuration file for ablation.
@@ -189,18 +204,34 @@ def generate_yaml_config(
     quality_map = {stat['layer']: stat['signal_quality'] for stat in layer_stats}
     best_quality = quality_map[best_measurement_layer]
     
-    # Build ablation entries
+    # Determine core layer range (peak ± 7 layers for MoE, ± 5 for dense)
+    core_range = 7 if is_moe else 5
+    core_layers = set(range(
+        max(0, best_measurement_layer - core_range),
+        min(len(layer_stats), best_measurement_layer + core_range + 1)
+    ))
+    
+    # Build ablation entries with graduated scale
     ablate_entries = []
     for layer in selected_layers:
         layer_quality = quality_map.get(layer, 0)
         
-        # Optionally reduce scale for lower quality layers
-        if scale_decay and layer_quality < best_quality * 0.7:
-            layer_scale = scale * 0.8
-        elif scale_decay and layer_quality < best_quality * 0.5:
-            layer_scale = scale * 0.6
+        # MoE models use higher base scale and graduated approach
+        if is_moe:
+            if layer in core_layers:
+                # Core layers: highest scale
+                layer_scale = scale * 2.0
+            else:
+                # Extended layers: moderate scale
+                layer_scale = scale * 1.5
         else:
-            layer_scale = scale
+            # Dense models: standard scale with optional decay
+            if scale_decay and layer_quality < best_quality * 0.7:
+                layer_scale = scale * 0.8
+            elif scale_decay and layer_quality < best_quality * 0.5:
+                layer_scale = scale * 0.6
+            else:
+                layer_scale = scale
         
         ablate_entries.append({
             'layer': int(layer),
@@ -222,9 +253,16 @@ def generate_yaml_config(
         # Write header comment
         f.write(f"# Auto-generated ablation configuration\n")
         f.write(f"# Generated from: {measurements_path}\n")
+        f.write(f"# Model type: {'MoE' if is_moe else 'Dense'}\n")
         f.write(f"# Best measurement layer: {best_measurement_layer} (quality: {best_quality:.4f})\n")
         f.write(f"# Selected {len(selected_layers)} layers for ablation\n")
         f.write(f"# Layer range: {min(selected_layers)}-{max(selected_layers)}\n")
+        if is_moe:
+            f.write(f"#\n")
+            f.write(f"# MoE-specific settings:\n")
+            f.write(f"#   - Core layers ({best_measurement_layer}±{7}): scale=2.0\n")
+            f.write(f"#   - Extended layers: scale=1.5\n")
+            f.write(f"#   - More layers selected due to distributed refusal in MoE\n")
         f.write(f"#\n")
         f.write(f"# Top 5 layers by signal quality:\n")
         for i, stat in enumerate(layer_stats[:5]):
@@ -357,18 +395,31 @@ def main():
                   f"refusal_norm={stat['refusal_norm']:.2f}")
         print("="*70 + "\n")
     
+    # Detect if MoE model
+    is_moe = is_moe_model(args.model_path)
+    model_type_str = "MoE" if is_moe else "Dense"
+    print(f"\nDetected model type: {model_type_str}")
+    
     # Select layers
     selected_layers, best_layer = select_layers(
         layer_stats,
         mode=mode,
         min_quality=args.min_quality,
         top_n=args.top_n,
+        is_moe=is_moe,
     )
     
     print(f"\nMode: {mode}")
+    print(f"Model type: {model_type_str}")
     print(f"Selected {len(selected_layers)} layers: {selected_layers}")
     print(f"Best measurement layer: {best_layer}")
     print(f"Quality range: {layer_stats[-1]['signal_quality']:.4f} - {layer_stats[0]['signal_quality']:.4f}")
+    
+    if is_moe:
+        print(f"\nMoE-specific settings:")
+        print(f"  - Using higher scale factors (2.0 core, 1.5 extended)")
+        print(f"  - Selecting more layers ({len(selected_layers)} vs ~{len(selected_layers)//2} for dense)")
+        print(f"  - Core layers: {best_layer}±7")
     
     # Generate YAML
     generate_yaml_config(
@@ -381,6 +432,7 @@ def main():
         scale=args.scale,
         sparsity=args.sparsity,
         scale_decay=not args.no_scale_decay,
+        is_moe=is_moe,
     )
     
     print(f"\nNext step: Run ablation with:")
