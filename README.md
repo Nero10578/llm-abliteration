@@ -76,12 +76,41 @@ python analyze.py <measurement_file> -c
 ```
 The `-c` option will put up some nice charting. Look toward middle to late middle layers for good candidate layer sources for refusal direction.
 
+### Generate ablation configuration (automated)
+
+```shell
+python generate_ablation_config.py -m <measurement_file> -p <model_path>
+```
+
+This script automatically analyzes your measurements and generates an optimized YAML configuration:
+- **Balanced mode** (default): Selects ~12 best layers
+- **Conservative mode** (`--conservative`): Selects ~8 highest-quality layers only
+- **Aggressive mode** (`--aggressive`): Selects ~20 layers with lower threshold
+
+Example usage:
+```shell
+# Balanced approach (recommended)
+python generate_ablation_config.py -m GLM.refuse -p /home/arli/models/GLM-4.5-Air
+
+# Conservative approach (safer, fewer layers)
+python generate_ablation_config.py -m GLM.refuse -p /home/arli/models/GLM-4.5-Air --conservative
+
+# Custom thresholds
+python generate_ablation_config.py -m GLM.refuse -p /home/arli/models/GLM-4.5-Air --min-quality 0.020 --top-n 10
+
+# Show detailed analysis
+python generate_ablation_config.py -m GLM.refuse -p /home/arli/models/GLM-4.5-Air --show-analysis
+```
+
+The script will create a `<measurement_file>_config.yml` file ready for ablation.
+
 ### Abliterate model
 
 ```
-python sharded_abliteration.py <abliteration_yaml_file>
+python sharded_ablate.py <abliteration_yaml_file>
 ```
-Look at the example YAML file to see how this is structured.
+You can use the auto-generated config from the previous step, or manually create a YAML file.
+Look at the example YAML files to see how this is structured.
 YAML was opted for in order to allow more than one source layer for refusal direction measurement, and for different strategies to be applied per destination layer.
 
 ### Chat with your abliterated model
