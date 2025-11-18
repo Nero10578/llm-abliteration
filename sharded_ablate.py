@@ -40,6 +40,9 @@ def modify_tensor_norm_preserved(
     """
     Modify weight tensor by ablating refusal direction while preserving row norms.
     Returns a plain tensor (not a Parameter).
+    
+    Handles both standard weights (where in_features matches refusal_dir size)
+    and routing gates (where in_features doesn't match).
     """
     original_dtype = W.dtype
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -54,26 +57,60 @@ def modify_tensor_norm_preserved(
         if refusal_dir_gpu.dim() > 1:
             refusal_dir_gpu = refusal_dir_gpu.view(-1)
         
-        # Normalize refusal direction
-        refusal_normalized = torch.nn.functional.normalize(refusal_dir_gpu, dim=0)
-
-        # Decompose weight matrix
+        # Check if this is a routing gate (different dimensions)
         # W_gpu is [out_features, in_features]
-        W_norm = torch.norm(W_gpu, dim=1, keepdim=True)  # [out_features, 1]
-        W_direction = torch.nn.functional.normalize(W_gpu, dim=1)  # normalized per output neuron
-    
-        # Apply abliteration to the DIRECTIONAL component
-        # Compute dot product of each row with refusal direction
-        projection = torch.matmul(W_direction, refusal_normalized)  # [in_features]
+        # For routing gates: in_features = hidden_size, out_features = num_experts
+        # For standard weights: in_features = hidden_size
+        if W_gpu.shape[1] != refusal_dir_gpu.shape[0]:
+            # This is likely a routing gate or other incompatible weight
+            # We can only ablate along the input dimension (hidden_size)
+            # which is the first dimension after transpose
+            if W_gpu.shape[0] == refusal_dir_gpu.shape[0]:
+                # Ablate along the first dimension (rows in transposed view)
+                refusal_normalized = torch.nn.functional.normalize(refusal_dir_gpu, dim=0)
+                
+                # For each output (expert), compute projection and subtract
+                W_norm = torch.norm(W_gpu, dim=0, keepdim=True)  # [1, out_features]
+                W_direction = torch.nn.functional.normalize(W_gpu, dim=0)  # normalized per output
+                
+                # Compute projection for each output
+                projection = torch.matmul(refusal_normalized, W_direction)  # [out_features]
+                
+                # Subtract the projection
+                W_direction_new = W_direction - scale_factor * torch.outer(refusal_normalized, projection)
+                
+                # Re-normalize
+                W_direction_new = torch.nn.functional.normalize(W_direction_new, dim=0)
+                
+                # Recombine
+                W_modified = W_norm * W_direction_new
+            else:
+                # Cannot ablate this weight - dimensions don't match
+                # Return original weight unchanged
+                print(f"    Warning: Skipping weight with incompatible shape {W.shape} (refusal_dir: {refusal_dir.shape})")
+                return W.detach().clone()
+        else:
+            # Standard ablation for compatible weights
+            # Normalize refusal direction
+            refusal_normalized = torch.nn.functional.normalize(refusal_dir_gpu, dim=0)
+
+            # Decompose weight matrix
+            # W_gpu is [out_features, in_features]
+            W_norm = torch.norm(W_gpu, dim=1, keepdim=True)  # [out_features, 1]
+            W_direction = torch.nn.functional.normalize(W_gpu, dim=1)  # normalized per output neuron
         
-        # Subtract the projection
-        W_direction_new = W_direction - scale_factor * torch.outer(projection, refusal_normalized)
-    
-        # Re-normalize the adjusted direction
-        W_direction_new = torch.nn.functional.normalize(W_direction_new, dim=1)
-    
-        # Recombine: keep original magnitude, use new direction
-        W_modified = W_norm * W_direction_new
+            # Apply abliteration to the DIRECTIONAL component
+            # Compute dot product of each row with refusal direction
+            projection = torch.matmul(W_direction, refusal_normalized)  # [out_features]
+            
+            # Subtract the projection
+            W_direction_new = W_direction - scale_factor * torch.outer(projection, refusal_normalized)
+        
+            # Re-normalize the adjusted direction
+            W_direction_new = torch.nn.functional.normalize(W_direction_new, dim=1)
+        
+            # Recombine: keep original magnitude, use new direction
+            W_modified = W_norm * W_direction_new
         
         # Convert back to original dtype and CPU
         # Transpose here to return safetensors convention
