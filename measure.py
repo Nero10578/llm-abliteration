@@ -347,13 +347,14 @@ if __name__ == "__main__":
         deccp_list = load_dataset("augmxnt/deccp", split="censored")
         harmful_list += deccp_list["text"]
 
-    # Assume "cuda" device for now; refactor later if there's demand for other GPU-accelerated platforms
+    # Use device_map="auto" to automatically distribute across all available GPUs
+    # This enables multi-GPU usage for large models
     if hasattr(model_config, "quantization_config"):
         model = AutoModelForCausalLM.from_pretrained(
             args.model,
 #            trust_remote_code=True,
             dtype=precision,
-            device_map="cuda",
+            device_map="auto",  # Changed from "cuda" to "auto" for multi-GPU support
             attn_implementation="flash_attention_2" if args.flash_attn else None,
         )
     else:
@@ -362,7 +363,7 @@ if __name__ == "__main__":
 #            trust_remote_code=True,
             dtype=precision,
             low_cpu_mem_usage=True,
-            device_map="cuda",
+            device_map="auto",  # Changed from "cuda" to "auto" for multi-GPU support
             quantization_config=quant_config,
             attn_implementation="flash_attention_2" if args.flash_attn else None,
         )
@@ -384,7 +385,6 @@ if __name__ == "__main__":
         try:
             processor = AutoProcessor.from_pretrained(
                 args.model,
-                device_map="cuda",
                 padding=True,
             )
             tokenizer = processor.tokenizer
@@ -396,14 +396,12 @@ if __name__ == "__main__":
             tokenizer = AutoTokenizer.from_pretrained(
                 args.model,
 #                trust_remote_code=True,
-                device_map="cuda",
                 padding=True,
             )
     else:
         tokenizer = AutoTokenizer.from_pretrained(
             args.model,
 #            trust_remote_code=True,
-            device_map="cuda",
             padding=True,
         )
 
