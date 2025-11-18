@@ -142,6 +142,9 @@ def compute_refusals(
     layer_base = model.model
     if hasattr(layer_base,"language_model"):
         layer_base = layer_base.language_model
+    # For GLM models, the base might be directly accessible
+    if not hasattr(layer_base, "layers"):
+        raise ValueError(f"Could not find layers in model structure. Model base: {type(layer_base)}")
     num_layers = len(layer_base.layers)
     pos = -1
     # option for layer sweep
@@ -371,6 +374,9 @@ if __name__ == "__main__":
     layer_base = model.model
     if hasattr(layer_base,"language_model"):
         layer_base = layer_base.language_model
+    # Verify we can access layers for GLM and other architectures
+    if not hasattr(layer_base, "layers"):
+        raise ValueError(f"Could not find layers in model structure. Model base: {type(layer_base)}")
 
     # Load processor for vision models, tokenizer for text-only models
     processor = None

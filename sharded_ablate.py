@@ -154,9 +154,24 @@ def ablate_by_layers_sharded(
         o_proj_pattern = f"{layer_prefix}.layers.{layer}.self_attn.o_proj.weight"
         down_proj_pattern = f"{layer_prefix}.layers.{layer}.mlp.down_proj.weight"
         
+        # MoE-specific patterns for GLM-4.5-Air and similar architectures
+        experts_down_proj_prefix = f"{layer_prefix}.layers.{layer}.mlp.experts."
+        shared_experts_down_proj = f"{layer_prefix}.layers.{layer}.mlp.shared_experts.down_proj.weight"
+        
         # Find keys that match
         for key, shard_file in weight_map.items():
+            # Standard patterns
             if key == o_proj_pattern or key == down_proj_pattern:
+                if shard_file not in shard_modifications:
+                    shard_modifications[shard_file] = []
+                shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))
+            # MoE expert patterns (e.g., mlp.experts.0.down_proj.weight, mlp.experts.1.down_proj.weight, etc.)
+            elif key.startswith(experts_down_proj_prefix) and key.endswith(".down_proj.weight"):
+                if shard_file not in shard_modifications:
+                    shard_modifications[shard_file] = []
+                shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))
+            # MoE shared experts pattern
+            elif key == shared_experts_down_proj:
                 if shard_file not in shard_modifications:
                     shard_modifications[shard_file] = []
                 shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))

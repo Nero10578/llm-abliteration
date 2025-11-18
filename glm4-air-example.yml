@@ -1,0 +1,125 @@
+# Example configuration for GLM-4.5-Air MoE model abliteration
+# Model: /home/arli/models/GLM-4.5-Air
+# Architecture: Glm4MoeForCausalLM with 46 layers
+
+model: /home/arli/models/GLM-4.5-Air
+measurements: glm4-air.refuse  # Output from measure.py
+output: glm4-air-abliterated    # Output directory for abliterated model
+
+# Ablation configuration
+# For GLM-4.5-Air with 46 layers, focus on middle to late-middle layers
+# Adjust layer ranges and measurement sources based on analyze.py results
+ablate:
+  # Early-middle layers (layers 15-22)
+  - layer: 15
+    measurement: 25
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 16
+    measurement: 25
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 17
+    measurement: 25
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 18
+    measurement: 25
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 19
+    measurement: 25
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 20
+    measurement: 25
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 21
+    measurement: 25
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 22
+    measurement: 25
+    scale: 1.0
+    sparsity: 0.00
+  
+  # Middle layers (layers 23-30)
+  - layer: 23
+    measurement: 28
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 24
+    measurement: 28
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 25
+    measurement: 28
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 26
+    measurement: 28
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 27
+    measurement: 28
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 28
+    measurement: 28
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 29
+    measurement: 28
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 30
+    measurement: 28
+    scale: 1.0
+    sparsity: 0.00
+  
+  # Late-middle layers (layers 31-38)
+  - layer: 31
+    measurement: 33
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 32
+    measurement: 33
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 33
+    measurement: 33
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 34
+    measurement: 33
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 35
+    measurement: 33
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 36
+    measurement: 33
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 37
+    measurement: 33
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 38
+    measurement: 33
+    scale: 1.0
+    sparsity: 0.00
+
+# Notes:
+# 1. This is a TEMPLATE - you MUST run analyze.py first to determine optimal layers
+# 2. The measurement values (25, 28, 33) are examples - use actual layer indices from your analysis
+# 3. For MoE models, ablation will automatically apply to:
+#    - self_attn.o_proj.weight (attention output)
+#    - mlp.down_proj.weight (standard MLP, if present)
+#    - mlp.experts.[i].down_proj.weight (all expert down projections)
+#    - mlp.shared_experts.down_proj.weight (shared expert down projections)
+# 4. Adjust scale (0.0-2.0) to control ablation strength
+# 5. Adjust sparsity (0.0-1.0) to keep only top-magnitude components
+# 6. Start with conservative settings and iterate based on results

@@ -6,7 +6,7 @@ Make abliterated models using Transformers, easy and fast. Now faster with batch
 
 There exist directions that cause LLMs to refuse users' input. Abliteration is a technique that can approximate the most significant refusal direction by contrasting harmful and harmless prompts, and then remove/ablate the direction from the model. This is a proof-of-concept implementation to explore the removal refusals from an LLM without the use of TransformerLens, although some GPU acceleration has been implemented.
 
-The code in various forms has been tested on Llama-3.2, Qwen2.5-Coder, Ministral-8b, Mistral-7B-Instruct-v0.2, gemma-3-27b-it, and Mistral-Nemo-Instruct-2407.
+The code in various forms has been tested on Llama-3.2, Qwen2.5-Coder, Ministral-8b, Mistral-7B-Instruct-v0.2, gemma-3-27b-it, Mistral-Nemo-Instruct-2407, and GLM-4.5-Air (MoE).
 
 VRAM/RAM requirements: This codebase reflects efforts to reduce VRAM usage. You can abliterate whatever any model provided it fits within VRAM. Loading model in 4-bit precision using bitsandbytes is possible and recommended for large models when VRAM is limited. It is assumed that there is enough cpu memory to load the **bf16** (or full weight) model; the method for ablating the refusal vector could be enhanced to perform lazy-loading in the future to reduce this requirement.
 
@@ -20,6 +20,16 @@ For an explanation of abliteration, see: https://huggingface.co/blog/mlabonne/ab
 This repo enables norm-preserving biprojected abliteration. https://huggingface.co/blog/grimjim/norm-preserving-biprojected-abliteration
 
 Removal of the projected contribution during measurement is optional, but the other modifications to this implmentation abliteration are mandatory.
+
+## Mixture of Experts (MoE) Support
+
+This repository now supports Mixture of Experts models like GLM-4.5-Air. For MoE architectures, abliteration is automatically applied to:
+- Attention output projections (`self_attn.o_proj.weight`)
+- Standard MLP down projections (`mlp.down_proj.weight`, if present)
+- **Expert down projections** (`mlp.experts.[i].down_proj.weight`)
+- **Shared expert down projections** (`mlp.shared_experts.down_proj.weight`)
+
+See [`glm4-air-example.yml`](glm4-air-example.yml) for an example configuration.
 
 ## Quick Start
 
