@@ -267,10 +267,17 @@ def ablate_by_layers_sharded(
                 expert_count = max(expert_indices) + 1
                 print(f"Detected {expert_count} individual experts from expert keys")
         
-        # If no individual experts found, check for shared experts
-        if expert_count == 0 and shared_expert_keys:
-            expert_count = len(shared_expert_keys)  # Approximate
-            print(f"Detected shared experts (count estimated: {expert_count})")
+        # For GLM-4.5-Air style MoE: shared experts + individual experts
+        # The total experts is the max of individual experts, but we also have shared experts
+        if shared_expert_keys:
+            print(f"Detected shared experts architecture")
+            # For models like GLM-4.5-Air, we have both shared and individual experts
+            # The individual experts count is what matters for abliteration decisions
+            if expert_count == 0:
+                # If no individual experts detected but we have shared experts,
+                # it might be a different MoE architecture
+                expert_count = 8  # Reasonable default
+                print(f"No individual experts found, assuming {expert_count} total experts")
         
         # If still no experts found but we have gate, assume MoE with unknown count
         if expert_count == 0 and gate_keys:
@@ -307,8 +314,10 @@ def ablate_by_layers_sharded(
             # Optionally ablate individual experts
             if ablate_individual_experts and expert_subset is None:
                 expert_subset = list(range(expert_count))  # Ablate all experts
+                print(f"Will abliterate all {expert_count} individual experts per layer")
             
             if ablate_individual_experts and expert_subset:
+                print(f"Will abliterate {len(expert_subset)} experts: {expert_subset}")
                 for expert_idx in expert_subset:
                     if expert_idx >= expert_count:
                         print(f"Warning: Expert {expert_idx} not found (max: {expert_count-1})")
