@@ -115,52 +115,42 @@ def modify_tensor_norm_preserved_moe(
         # Normalize refusal direction
         refusal_normalized = torch.nn.functional.normalize(refusal_dir_gpu, dim=0)
         
-        # Check dimension compatibility
-        if W_gpu.shape[1] != refusal_dir_gpu.shape[0]:
-            print(f"Warning: Dimension mismatch - W shape: {W_gpu.shape}, refusal_dir shape: {refusal_dir_gpu.shape}")
-            
-            if is_expert_gate:
-                # For expert gates, we need to handle dimension mismatch differently
-                # Expert gates typically project from hidden_size to num_experts
-                # We can only modify the input dimension (hidden_size) part
-                
-                # Option 1: Skip modification for incompatible dimensions
-                print("Skipping expert gate modification due to dimension mismatch")
-                return W.detach().clone()
-                
-                # Option 2: Truncate/pad refusal direction (commented out - more risky)
-                # min_dim = min(W_gpu.shape[1], refusal_dir_gpu.shape[0])
-                # W_gpu_reduced = W_gpu[:, :min_dim]
-                # refusal_dir_reduced = refusal_dir_gpu[:min_dim]
-                # refusal_normalized = torch.nn.functional.normalize(refusal_dir_reduced, dim=0)
-        
         if is_expert_gate:
-            # For expert gates, we use a more conservative approach
-            # Expert gates determine routing, so we want to be more subtle
-            scale_factor = scale_factor * 0.5  # Reduce intensity for gates
+            # Expert gates have different dimension structure:
+            # They project from hidden_size to num_experts (e.g., 4096 -> 128)
+            # We cannot directly apply the same abliteration as regular weights
             
-            # Only proceed if dimensions are compatible
+            # For expert gates, we apply a very conservative modification
+            # Only modify if the input dimension matches refusal_dir dimension
             if W_gpu.shape[1] == refusal_dir_gpu.shape[0]:
-                # For gates, we modify the routing probabilities rather than weights
-                # Apply a smaller perturbation to avoid breaking expert selection
+                # Apply minimal perturbation to avoid breaking expert routing
+                scale_factor = scale_factor * 0.1  # Very conservative
+                
                 W_norm = torch.norm(W_gpu, dim=1, keepdim=True)
                 W_direction = torch.nn.functional.normalize(W_gpu, dim=1)
                 
                 # Compute dot product with refusal direction
                 projection = torch.matmul(W_direction, refusal_normalized)
                 
-                # Apply reduced modification
+                # Apply very reduced modification
                 W_direction_new = W_direction - scale_factor * torch.outer(projection, refusal_normalized)
                 
                 # Re-normalize
                 W_direction_new = torch.nn.functional.normalize(W_direction_new, dim=1)
                 W_modified = W_norm * W_direction_new
             else:
-                # Skip modification for incompatible dimensions
-                print("Skipping expert gate modification due to dimension mismatch")
+                # Skip expert gate modification - dimensions incompatible
+                # Expert gates should generally not be heavily modified anyway
                 return W.detach().clone()
         else:
             # Standard weight modification for shared experts and attention
+            # Check dimension compatibility
+            if W_gpu.shape[1] != refusal_dir_gpu.shape[0]:
+                raise RuntimeError(
+                    f"Dimension mismatch for non-gate weight: "
+                    f"W shape {W_gpu.shape}, refusal_dir shape {refusal_dir_gpu.shape}"
+                )
+            
             W_norm = torch.norm(W_gpu, dim=1, keepdim=True)  # [out_features, 1]
             W_direction = torch.nn.functional.normalize(W_gpu, dim=1)  # normalized per output neuron
             
@@ -365,60 +355,42 @@ def ablate_by_layers_sharded(
                 if key in state_dict:
                     print(f"  Modifying layer {layer}: {key}")
                     
-                    try:
-                        # Compute refusal direction on-the-fly
-                        refusal_dir = measures[f'refuse_{measurement}'].float()
-                        harmless_dir = measures[f'harmless_{layer}'].float()
-                        
-                        # Debug info
-                        print(f"    Refusal dir shape: {refusal_dir.shape}")
-                        print(f"    Weight shape: {state_dict[key].shape}")
-                        
-                        # Normalize harmless direction
-                        harmless_normalized = torch.nn.functional.normalize(harmless_dir, dim=0)
-                        
-                        # Project and subtract to refine refusal direction
-                        projection_scalar = refusal_dir @ harmless_normalized
-                        refined_refusal_dir = refusal_dir - projection_scalar * harmless_normalized
-                        refusal_dir = refined_refusal_dir.to(precision)
-                        
-                        # Apply sparsity
-                        if sparsity > 0.0:
-                            refusal_dir = magnitude_sparsify(refusal_dir, fraction=sparsity)
-                        
-                        # Normalize
-                        refusal_dir = torch.nn.functional.normalize(refusal_dir, dim=-1)
-                        
-                        # Determine if this is an expert gate for MoE handling
-                        is_expert_gate = is_moe and ".mlp.gate.weight" in key
-                        
-                        # Apply modification with MoE awareness
-                        if is_moe:
-                            modified_weight = modify_tensor_norm_preserved_moe(
-                                state_dict[key],
-                                refusal_dir,
-                                scale,
-                                is_expert_gate=is_expert_gate,
-                            ).contiguous()
-                            
-                            # Check if modification was actually applied
-                            if modified_weight.shape != state_dict[key].shape:
-                                print(f"    Warning: Shape changed during modification!")
-                            else:
-                                state_dict[key] = modified_weight
-                                print(f"    Successfully modified {key}")
-                        else:
-                            state_dict[key] = modify_tensor_norm_preserved(
-                                state_dict[key],
-                                refusal_dir,
-                                scale,
-                            ).contiguous()
-                            print(f"    Successfully modified {key}")
-                        
-                    except Exception as e:
-                        print(f"    ERROR modifying {key}: {str(e)}")
-                        print(f"    Skipping this weight and continuing...")
-                        continue
+                    # Compute refusal direction on-the-fly
+                    refusal_dir = measures[f'refuse_{measurement}'].float()
+                    harmless_dir = measures[f'harmless_{layer}'].float()
+                    
+                    # Normalize harmless direction
+                    harmless_normalized = torch.nn.functional.normalize(harmless_dir, dim=0)
+                    
+                    # Project and subtract to refine refusal direction
+                    projection_scalar = refusal_dir @ harmless_normalized
+                    refined_refusal_dir = refusal_dir - projection_scalar * harmless_normalized
+                    refusal_dir = refined_refusal_dir.to(precision)
+                    
+                    # Apply sparsity
+                    if sparsity > 0.0:
+                        refusal_dir = magnitude_sparsify(refusal_dir, fraction=sparsity)
+                    
+                    # Normalize
+                    refusal_dir = torch.nn.functional.normalize(refusal_dir, dim=-1)
+                    
+                    # Determine if this is an expert gate for MoE handling
+                    is_expert_gate = is_moe and ".mlp.gate.weight" in key
+                    
+                    # Apply modification with MoE awareness
+                    if is_moe:
+                        state_dict[key] = modify_tensor_norm_preserved_moe(
+                            state_dict[key],
+                            refusal_dir,
+                            scale,
+                            is_expert_gate=is_expert_gate,
+                        ).contiguous()
+                    else:
+                        state_dict[key] = modify_tensor_norm_preserved(
+                            state_dict[key],
+                            refusal_dir,
+                            scale,
+                        ).contiguous()
                     
                     # Clean up
                     del refusal_dir, harmless_dir, harmless_normalized, refined_refusal_dir
