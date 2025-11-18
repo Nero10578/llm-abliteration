@@ -1,0 +1,79 @@
+# Optimized configuration for GLM-4.5-Air based on analysis results
+# Model: /home/arli/models/GLM-4.5-Air
+# Best layers identified: 18-22 (peak signal quality)
+# Secondary layers: 15-17 (good signal quality)
+
+model: /home/arli/models/GLM-4.5-Air
+measurements: GLM.refuse
+output: glm4-air-abliterated
+
+# Ablation strategy based on analysis:
+# - Layers 18-22 show highest signal quality (0.029-0.043)
+# - Layer 18 has peak signal quality (0.0431) and lowest cosine similarity (0.9021)
+# - Using layer 18 as primary measurement source for strongest effect
+ablate:
+  # Secondary tier: Layers 15-17 (moderate signal quality)
+  - layer: 15
+    measurement: 18  # Use layer 18's strong refusal signal
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 16
+    measurement: 18
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 17
+    measurement: 18
+    scale: 1.0
+    sparsity: 0.00
+  
+  # Primary tier: Layers 18-22 (highest signal quality)
+  - layer: 18
+    measurement: 18  # Self-measurement for strongest layer
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 19
+    measurement: 18
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 20
+    measurement: 18
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 21
+    measurement: 18
+    scale: 1.0
+    sparsity: 0.00
+  - layer: 22
+    measurement: 18
+    scale: 1.0
+    sparsity: 0.00
+  
+  # Extended range: Layers 23-25 (declining but still useful)
+  - layer: 23
+    measurement: 18
+    scale: 0.9  # Slightly reduced scale for weaker signal
+    sparsity: 0.00
+  - layer: 24
+    measurement: 18
+    scale: 0.9
+    sparsity: 0.00
+  - layer: 25
+    measurement: 18
+    scale: 0.8
+    sparsity: 0.00
+
+# Notes:
+# 1. Layer 18 shows the strongest refusal signal (signal quality: 0.0431)
+# 2. Using layer 18 as measurement source for all ablations
+# 3. Scale reduced for later layers (23-25) due to weaker signal
+# 4. Layers 0-14 show weak signal and are skipped
+# 5. Layers 26+ show declining signal quality and high cosine similarity
+# 6. For MoE models, this will ablate all expert down_proj weights automatically
+#
+# Conservative approach: Start with layers 18-22 only
+# Aggressive approach: Include layers 15-25 as shown above
+# 
+# Adjust scale parameter (0.5-2.0) to fine-tune ablation strength:
+# - scale: 0.5 = gentle ablation
+# - scale: 1.0 = standard ablation (recommended)
+# - scale: 1.5-2.0 = aggressive ablation
