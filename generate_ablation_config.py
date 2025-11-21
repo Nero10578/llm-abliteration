@@ -69,6 +69,29 @@ def compute_signal_quality(
     return cosine_sim, snr, signal_quality, refusal_norm
 
 
+def is_moe_model(model_path: str) -> bool:
+    """
+    Check if the model is a Mixture of Experts (MoE) model.
+    """
+    try:
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        # Check for common MoE indicators in config
+        if hasattr(config, 'num_experts') and config.num_experts > 1:
+            return True
+        if hasattr(config, 'n_routed_experts') and config.n_routed_experts > 1:
+            return True
+        if hasattr(config, 'moe'):
+            return True
+        # Check architecture name
+        arch = getattr(config, 'architectures', [])
+        if arch and any('MoE' in a or 'Mixtral' in a for a in arch):
+            return True
+        return False
+    except Exception as e:
+        print(f"Warning: Could not load config to check for MoE: {e}")
+        return False
+
+
 def analyze_measurements(measurements_path: str) -> List[Dict]:
     """
     Analyze measurements and return layer statistics.
@@ -119,7 +142,7 @@ def analyze_measurements(measurements_path: str) -> List[Dict]:
 def select_layers(
     layer_stats: List[Dict],
     mode: str = 'balanced',
-    min_quality: float = 0.015,
+    min_quality: float = None,
     top_n: int = None,
     is_moe: bool = False,
 ) -> Tuple[List[int], int]:
@@ -136,18 +159,22 @@ def select_layers(
     Returns:
         Tuple of (selected_layer_indices, best_measurement_layer)
     """
-    # Mode-specific defaults - MoE models need more layers
+    num_total_layers = len(layer_stats)
+    
+    # Mode-specific defaults using percentages
     if is_moe:
+        # MoE models distribute refusal more, so we target a larger percentage of layers
         mode_configs = {
-            'conservative': {'min_quality': 0.015, 'top_n': 16},
-            'balanced': {'min_quality': 0.006, 'top_n': 26},  # Lower threshold to capture more layers
-            'aggressive': {'min_quality': 0.004, 'top_n': 36},
+            'conservative': {'min_quality': 0.015, 'pct': 0.35}, # ~35% of layers
+            'balanced': {'min_quality': 0.006, 'pct': 0.55},     # ~55% of layers
+            'aggressive': {'min_quality': 0.004, 'pct': 0.75},   # ~75% of layers
         }
     else:
+        # Dense models have more localized refusal
         mode_configs = {
-            'conservative': {'min_quality': 0.025, 'top_n': 8},
-            'balanced': {'min_quality': 0.015, 'top_n': 12},
-            'aggressive': {'min_quality': 0.010, 'top_n': 20},
+            'conservative': {'min_quality': 0.025, 'pct': 0.20}, # ~20% of layers
+            'balanced': {'min_quality': 0.015, 'pct': 0.35},     # ~35% of layers
+            'aggressive': {'min_quality': 0.010, 'pct': 0.50},   # ~50% of layers
         }
     
     if mode in mode_configs:
@@ -155,7 +182,9 @@ def select_layers(
         if min_quality is None:
             min_quality = config['min_quality']
         if top_n is None:
-            top_n = config['top_n']
+            top_n = int(num_total_layers * config['pct'])
+            # Ensure at least a few layers are selected if model is small
+            top_n = max(top_n, 5)
     
     # Find best measurement layer (highest signal quality)
     best_layer = layer_stats[0]['layer']
