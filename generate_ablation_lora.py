@@ -364,16 +364,10 @@ def main():
             # B = v * sqrt(s)
             sqrt_s = torch.sqrt(s)
             
-            # A: [out, k]
-            # B: [k, in]
+            # A: [out, k] -> This corresponds to LoRA B (up projection)
+            # B: [k, in]  -> This corresponds to LoRA A (down projection)
             A = u * sqrt_s.unsqueeze(0)
             B = v * sqrt_s.unsqueeze(1)
-            
-            # Transpose B to match LoRA shape [k, in]?
-            # Vh is [in, in] (transposed V).
-            # v = Vh[:k, :] is [k, in].
-            # B should be [k, in].
-            # v * sqrt_s.unsqueeze(1) -> [k, in] * [k, 1] -> [k, in]. Correct.
             
             # Use bfloat16 to match model dtype (assuming model is bf16)
             dtype = torch.bfloat16
@@ -389,14 +383,16 @@ def main():
                 
                 if layer_idx not in expert_weights_buffer:
                     expert_weights_buffer[layer_idx] = {}
-                expert_weights_buffer[layer_idx][expert_idx] = {'A': A, 'B': B}
+                # Store B as lora_A (down), A as lora_B (up)
+                expert_weights_buffer[layer_idx][expert_idx] = {'A': B, 'B': A}
             else:
                 # Standard save for non-expert weights
                 suffix = module_name.replace("model.", "") # layers.X...
                 target_modules_list.add(module_name.split('.')[-1])
                 
-                lora_weights[f"base_model.model.{suffix}.lora_A.weight"] = A
-                lora_weights[f"base_model.model.{suffix}.lora_B.weight"] = B
+                # Swap A and B: B is lora_A (in->rank), A is lora_B (rank->out)
+                lora_weights[f"base_model.model.{suffix}.lora_A.weight"] = B
+                lora_weights[f"base_model.model.{suffix}.lora_B.weight"] = A
             
             del W, W_modified, Delta, U, S, Vh, A, B
             
