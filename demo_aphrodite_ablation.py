@@ -43,16 +43,22 @@ def main():
     print("Generating WITH Ablation LoRA...")
     print("-" * 50)
     
-    outputs = engine.generate(
-        args.prompt,
-        sampling_params,
-        lora_request=LoRARequest("ablation_adapter", 1, args.lora),
-        request_id="ablated"
-    )
-    
-    for output in outputs:
-        print(f"Prompt: {output.prompt}")
-        print(f"Generated text: {output.outputs[0].text}")
+    try:
+        outputs = engine.generate(
+            args.prompt,
+            sampling_params,
+            lora_request=LoRARequest("ablation_adapter", 1, args.lora),
+            request_id="ablated"
+        )
+        
+        for output in outputs:
+            print(f"Prompt: {output.prompt}")
+            print(f"Generated text: {output.outputs[0].text}")
+            
+    except Exception as e:
+        print(f"Error generating with LoRA: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
