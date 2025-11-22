@@ -181,6 +181,7 @@ def main():
     parser = argparse.ArgumentParser(description="Generate LoRA adapter for model abliteration.")
     parser.add_argument('config_path', type=str, help='Path to YAML configuration file')
     parser.add_argument('--model_path', type=str, required=True, help='Path to base model (for calculating projections)')
+    parser.add_argument('--format', type=str, choices=['aphrodite', 'transformers'], default='aphrodite', help='Output format for LoRA adapter')
     args = parser.parse_args()
 
     # Load config
@@ -400,81 +401,73 @@ def main():
         torch.cuda.empty_cache()
 
     # Process buffered expert weights
-    print("Processing expert weights for FusedMoE compatibility...")
-    for layer_idx, experts in expert_weights_buffer.items():
-        # We need to stack weights for all experts.
-        # Aphrodite expects FusedMoE weights to be stacked along the RANK dimension.
-        # A: [num_experts * rank, intermediate]
-        # B: [hidden, num_experts * rank]
-        
-        # Find max expert index to determine num_experts
-        # Note: This assumes we found at least one expert. If some are missing, we should probably fill with zeros?
-        # But we only ablate what we found. However, for FusedMoE stacking, we need ALL experts.
-        # We can infer num_experts from the keys.
-        
-        # Assuming expert indices are 0 to N-1
-        max_expert_idx = max(experts.keys())
-        num_experts = max_expert_idx + 1
-        
-        # Get shapes from first expert
-        first_expert = experts[list(experts.keys())[0]]
-        rank = first_expert['A'].shape[0]
-        intermediate_size = first_expert['A'].shape[1]
-        hidden_size = first_expert['B'].shape[0]
-        dtype = first_expert['A'].dtype
-        device = 'cpu' # Construct on CPU
-        
-        # 1. Construct Down Proj (experts)
-        # A: [num_experts * rank, intermediate]
-        # B: [hidden, num_experts * rank]
-        
-        down_A_list = []
-        down_B_list = []
-        
-        for i in range(num_experts):
-            if i in experts:
-                down_A_list.append(experts[i]['A'].to(device))
-                down_B_list.append(experts[i]['B'].to(device))
-            else:
-                # Zero init for missing experts (though we should probably have all of them if we scanned correctly)
-                down_A_list.append(torch.zeros((rank, intermediate_size), dtype=dtype, device=device))
-                down_B_list.append(torch.zeros((hidden_size, rank), dtype=dtype, device=device))
-                
-        down_A_stacked = torch.cat(down_A_list, dim=0)
-        down_B_stacked = torch.cat(down_B_list, dim=1)
-        
-        suffix = f"layers.{layer_idx}.mlp.experts"
-        lora_weights[f"base_model.model.{suffix}.lora_A.weight"] = down_A_stacked
-        lora_weights[f"base_model.model.{suffix}.lora_B.weight"] = down_B_stacked
-        target_modules_list.add("experts")
-        
-        # 2. Construct Gate/Up Proj (experts.base_layer) - Dummy Zeros
-        # Aphrodite requires this to be present for FusedMoEWithLoRA
-        # A: [num_experts * rank, hidden]
-        # B: [2 * intermediate, num_experts * rank]
-        
-        # Note: gate_up_proj output is 2 * intermediate.
-        # Aphrodite splits B with [::2] for gate and [1::2] for up.
-        
-        gate_up_A = torch.zeros((num_experts * rank, hidden_size), dtype=dtype, device=device)
-        gate_up_B = torch.zeros((2 * intermediate_size, num_experts * rank), dtype=dtype, device=device)
-        
-        suffix_base = f"layers.{layer_idx}.mlp.experts.base_layer"
-        lora_weights[f"base_model.model.{suffix_base}.lora_A.weight"] = gate_up_A
-        lora_weights[f"base_model.model.{suffix_base}.lora_B.weight"] = gate_up_B
-        # We don't need to add base_layer to target_modules_list explicitly if 'experts' covers the module replacement?
-        # Actually, Aphrodite checks for 'experts' in target_modules.
-        # But we should probably add 'base_layer' just in case, or rely on 'experts'.
-        # The code in Aphrodite checks: if ".experts" in module_name...
-        
+    if args.format == 'aphrodite':
+        print("Processing expert weights for FusedMoE compatibility (Aphrodite format)...")
+        for layer_idx, experts in expert_weights_buffer.items():
+            # We need to stack weights for all experts.
+            # Aphrodite expects FusedMoE weights to be stacked along the RANK dimension.
+            # A: [num_experts * rank, intermediate]
+            # B: [hidden, num_experts * rank]
+            
+            # Find max expert index to determine num_experts
+            max_expert_idx = max(experts.keys())
+            num_experts = max_expert_idx + 1
+            
+            # Get shapes from first expert
+            first_expert = experts[list(experts.keys())[0]]
+            rank = first_expert['A'].shape[0]
+            intermediate_size = first_expert['A'].shape[1]
+            hidden_size = first_expert['B'].shape[0]
+            dtype = first_expert['A'].dtype
+            device = 'cpu' # Construct on CPU
+            
+            # 1. Construct Down Proj (experts)
+            down_A_list = []
+            down_B_list = []
+            
+            for i in range(num_experts):
+                if i in experts:
+                    down_A_list.append(experts[i]['A'].to(device))
+                    down_B_list.append(experts[i]['B'].to(device))
+                else:
+                    # Zero init for missing experts
+                    down_A_list.append(torch.zeros((rank, intermediate_size), dtype=dtype, device=device))
+                    down_B_list.append(torch.zeros((hidden_size, rank), dtype=dtype, device=device))
+                    
+            down_A_stacked = torch.cat(down_A_list, dim=0)
+            down_B_stacked = torch.cat(down_B_list, dim=1)
+            
+            suffix = f"layers.{layer_idx}.mlp.experts"
+            lora_weights[f"base_model.model.{suffix}.lora_A.weight"] = down_A_stacked
+            lora_weights[f"base_model.model.{suffix}.lora_B.weight"] = down_B_stacked
+            target_modules_list.add("experts")
+            
+            # 2. Construct Gate/Up Proj (experts.base_layer) - Dummy Zeros
+            gate_up_A = torch.zeros((num_experts * rank, hidden_size), dtype=dtype, device=device)
+            gate_up_B = torch.zeros((2 * intermediate_size, num_experts * rank), dtype=dtype, device=device)
+            
+            suffix_base = f"layers.{layer_idx}.mlp.experts.base_layer"
+            lora_weights[f"base_model.model.{suffix_base}.lora_A.weight"] = gate_up_A
+            lora_weights[f"base_model.model.{suffix_base}.lora_B.weight"] = gate_up_B
+            
+        # Ensure 'experts' is in target_modules if we added it
+        if expert_weights_buffer:
+            target_modules_list.add("experts")
+
+    else: # transformers format
+        print("Processing expert weights for Transformers compatibility...")
+        for layer_idx, experts in expert_weights_buffer.items():
+            for expert_idx, weights in experts.items():
+                # Save individual expert weights
+                # model.layers.X.mlp.experts.Y.down_proj
+                suffix = f"layers.{layer_idx}.mlp.experts.{expert_idx}.down_proj"
+                lora_weights[f"base_model.model.{suffix}.lora_A.weight"] = weights['A']
+                lora_weights[f"base_model.model.{suffix}.lora_B.weight"] = weights['B']
+                target_modules_list.add("down_proj")
+
     # Save LoRA adapter
     os.makedirs(output_dir, exist_ok=True)
     
-    # Update config
-    # Ensure 'experts' is in target_modules if we added it
-    if expert_weights_buffer:
-        target_modules_list.add("experts")
-        
     lora_config['target_modules'] = list(target_modules_list)
     
     print(f"Saving LoRA adapter to {output_dir}...")
