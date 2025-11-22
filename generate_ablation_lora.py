@@ -322,27 +322,38 @@ def main():
             # Compute delta
             # W_new = W + A @ B
             # Delta = W_new - W = A @ B
-            Delta = (W_modified - W).float()
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            Delta = (W_modified - W).to(device, dtype=torch.float32)
             
             # SVD decomposition
-            # We want rank 1 approximation
+            # Use svd_lowrank for speed since we only need top k components
+            k = lora_rank
             try:
-                U, S, Vh = torch.linalg.svd(Delta, full_matrices=False)
+                # svd_lowrank returns U, S, V (not Vh)
+                # U: (m, k), S: (k,), V: (n, k)
+                # We need Vh: (k, n) -> V.T
+                U, S, V = torch.svd_lowrank(Delta, q=k + 10, niter=2)
+                Vh = V.T
             except RuntimeError:
                 # Fallback to cpu if cuda fails (OOM)
-                U, S, Vh = torch.linalg.svd(Delta.cpu(), full_matrices=False)
-                U = U.to(Delta.device)
-                S = S.to(Delta.device)
-                Vh = Vh.to(Delta.device)
+                print(f"  SVD OOM on GPU, falling back to CPU for {module_name}")
+                U, S, V = torch.svd_lowrank(Delta.cpu(), q=k + 10, niter=2)
+                Vh = V.T
+                U = U.to(device)
+                S = S.to(device)
+                Vh = Vh.to(device)
             
             # Top k components
-            k = lora_rank
-            # Ensure we don't exceed available dimensions
-            k = min(k, U.shape[1], Vh.shape[0])
+            # svd_lowrank returns exactly q components, but we want k
+            # It might return slightly more or less depending on implementation details/convergence
+            # But usually it returns q.
             
-            u = U[:, :k]
-            s = S[:k]
-            v = Vh[:k, :]
+            # Ensure we don't exceed available dimensions
+            actual_k = min(k, U.shape[1], Vh.shape[0])
+            
+            u = U[:, :actual_k]
+            s = S[:actual_k]
+            v = Vh[:actual_k, :]
             
             # Distribute sigma
             # A = u * sqrt(s)
