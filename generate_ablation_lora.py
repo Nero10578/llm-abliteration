@@ -227,7 +227,7 @@ def main():
     for item in ablations:
         layer_idx = item['layer']
         targets.add(f"model.layers.{layer_idx}.self_attn.o_proj")
-        targets.add(f"model.layers.{layer_idx}.mlp.gate") # Router - Now supported via ReplicatedLinear
+        # targets.add(f"model.layers.{layer_idx}.mlp.gate") # Router - Now supported via ReplicatedLinear
         # Add shared experts down_proj if possible?
         # Usually shared experts are standard MLP, so targetable.
         targets.add(f"model.layers.{layer_idx}.mlp.shared_experts.down_proj")
