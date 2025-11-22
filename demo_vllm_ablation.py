@@ -7,9 +7,9 @@ def main():
     # Note: If you encounter "Error in tensor core plan", try unsetting VLLM_TUNED_CONFIG_FOLDER
     # or running with VLLM_NO_USAGE_STATS=1 to avoid loading incompatible cached configs.
     llm = LLM(
-        model="/home/arli/models/GLM-4.5-Air", 
+        model="/home/arli/models/GLM-4.5-Air",
         enable_lora=True,
-        max_lora_rank=1, # Ablation LoRAs are rank 1
+        max_lora_rank=32, # Increased rank for better approximation
         trust_remote_code=True
     )
 

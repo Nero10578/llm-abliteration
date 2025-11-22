@@ -19,61 +19,163 @@ def magnitude_sparsify(tensor: torch.Tensor, fraction: float) -> torch.Tensor:
     mask = tensor.abs() >= threshold
     return tensor * mask
 
-def calculate_lora_weights(
-    weight_name: str,
-    original_weight_shape: tuple,
-    refusal_dir: torch.Tensor,
-    scale: float,
-    lora_rank: int = 1
-):
+def modify_tensor_norm_preserved(
+    W: torch.Tensor, refusal_dir: torch.Tensor, scale_factor: float = 1.0,
+) -> torch.Tensor:
     """
-    Calculate LoRA A and B matrices to approximate the ablation.
-    Ablation: W_new = W - scale * outer(projection, refusal)
-    LoRA: W_new = W + A @ B
+    Modify weight tensor by ablating refusal direction while preserving row norms.
+    Returns a plain tensor (not a Parameter).
     
-    We want A @ B = -scale * outer(projection, refusal)
-    
-    Note: The 'projection' depends on the original weight W.
-    Since we don't want to load the full model weights here, we make a simplification:
-    The ablation logic in sharded_ablate.py computes projection = W_direction @ refusal.
-    
-    If we want to create a LoRA adapter *without* access to the base model weights,
-    we strictly speaking cannot, because the ablation direction depends on W.
-    
-    However, if we assume the user provides the 'refusal' direction which is in the 
-    activation space (hidden_size), we can construct a LoRA that projects *out* 
-    this direction.
-    
-    Actually, the standard ablation method (Soups/Abliteration) defines the refusal direction
-    in the *residual stream* (activation space).
-    
-    For a linear layer W (in_features -> out_features):
-    y = xW^T
-    
-    We want to remove the refusal component from the output y.
-    y_new = y - (y @ refusal) * refusal^T
-    
-    This is equivalent to modifying W:
-    W_new = W - W @ outer(refusal, refusal)
-    
-    This is a rank-1 update:
-    W_new = W + (W @ refusal) @ (-refusal^T)
-    
-    Here:
-    B = -refusal^T  (shape: 1 x in_features)
-    A = W @ refusal (shape: out_features x 1)
-    
-    CRITICAL ISSUE: We need W to compute A.
-    Without loading the base model weights, we cannot compute the exact ablation LoRA.
-    
-    Workaround:
-    1. The user must run this script on a machine with access to the base model weights (or at least the specific layers).
-    2. Or, we accept that we need to load the weights.
-    
-    Given the user's environment has the model (implied by sharded_ablate.py usage), 
-    we will assume we can load the necessary shards.
+    Handles both standard weights (where in_features matches refusal_dir size)
+    and routing gates (where in_features doesn't match).
     """
-    pass
+    original_dtype = W.dtype
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    with torch.no_grad():
+        # Move tensors for computation
+        # Transpose here to convert from safetensors convention
+        # W is [out_features, in_features] in PyTorch, but safetensors loads it as is.
+        # Wait, safetensors load_file returns tensors in PyTorch layout [out, in] for Linear.
+        # sharded_ablate.py says:
+        # "PyTorch nn.Linear layers store weights as [out_features, in_features]"
+        # "Safetensors (HuggingFace format) stores them as [in_features, out_features] - transposed!"
+        # BUT load_file usually handles this? No, load_file loads exactly what's on disk.
+        # If the file is HF safetensors, Linear weights are usually [out, in].
+        # Let's assume W is [out, in].
+        
+        W_gpu = W.to(device, dtype=torch.float32, non_blocking=True)
+        refusal_dir_gpu = refusal_dir.to(device, dtype=torch.float32, non_blocking=True)
+
+        # Ensure refusal_dir is a 1-dimensional tensor
+        if refusal_dir_gpu.dim() > 1:
+            refusal_dir_gpu = refusal_dir_gpu.view(-1)
+        
+        # Check if this is a routing gate (different dimensions)
+        # W_gpu is [out_features, in_features]
+        # For routing gates: in_features = hidden_size, out_features = num_experts
+        # For standard weights: in_features = hidden_size
+        
+        # Case 1: Input dimension matches refusal (e.g. Gate, Up, Q, K, V)
+        if W_gpu.shape[1] == refusal_dir_gpu.shape[0]:
+             # Ablate along the input dimension (columns)
+            refusal_normalized = torch.nn.functional.normalize(refusal_dir_gpu, dim=0)
+            
+            # For each output (row), compute projection and subtract
+            # We want to remove refusal from the input space.
+            # W_new = W - (W @ r) @ r.T
+            # But norm preserving:
+            # Normalize rows? No, input space means we look at columns?
+            # sharded_ablate.py logic for gate:
+            # "Ablate along the first dimension (rows in transposed view)" -> Transposed view was [in, out].
+            # So rows of transposed view = columns of original view.
+            # So we normalize columns.
+            
+            W_norm = torch.norm(W_gpu, dim=0, keepdim=True)  # [1, in_features] -> Wait, norm of columns?
+            # If we ablate input, we are modifying how the layer reacts to input.
+            # sharded_ablate.py logic for gate (W.shape[1] != refusal.shape[0] in its transposed view):
+            # Its transposed view W_gpu was [out, in].
+            # Wait, sharded_ablate.py:
+            # W_gpu = W.to(...).T  -> [in, out]
+            # if W_gpu.shape[1] != refusal.shape[0]: (out != hidden) -> True for gate (out=experts, hidden=in)
+            # if W_gpu.shape[0] == refusal.shape[0]: (in == hidden) -> True for gate
+            # "Ablate along the first dimension (rows in transposed view)" -> Rows of [in, out] are inputs.
+            # W_norm = torch.norm(W_gpu, dim=0, keepdim=True) -> Norm of columns of [in, out] -> Norm of output neurons?
+            # W_direction = normalize(W_gpu, dim=0) -> Normalize per output neuron.
+            
+            # So for Gate, it normalizes per output neuron (expert).
+            # Then projects refusal out of that direction.
+            # This effectively removes refusal from the "prototype" of each expert.
+            
+            # Let's replicate this on W [out, in]:
+            # W_gpu is [out, in].
+            # We want to normalize per row (dim=1).
+            # Wait, sharded_ablate.py used dim=0 on [in, out]. That is normalizing columns.
+            # Columns of [in, out] correspond to rows of [out, in].
+            # So yes, normalize per output neuron.
+            
+            W_norm = torch.norm(W_gpu, dim=1, keepdim=True) # [out, 1]
+            W_direction = torch.nn.functional.normalize(W_gpu, dim=1) # [out, in]
+            
+            # Compute projection: (W_dir @ r)
+            projection = torch.matmul(W_direction, refusal_normalized) # [out]
+            
+            # Subtract
+            # W_new = W_dir - scale * proj * r.T
+            W_direction_new = W_direction - scale_factor * torch.outer(projection, refusal_normalized)
+            
+            # Re-normalize
+            W_direction_new = torch.nn.functional.normalize(W_direction_new, dim=1)
+            
+            # Recombine
+            W_modified = W_norm * W_direction_new
+
+        # Case 2: Output dimension matches refusal (e.g. Down, O_proj)
+        elif W_gpu.shape[0] == refusal_dir_gpu.shape[0]:
+            # Ablate along the output dimension (rows)
+            # sharded_ablate.py logic for standard weights (else block):
+            # W_gpu was [in, out].
+            # W_norm = norm(W_gpu, dim=1) -> Norm of rows of [in, out] -> Norm of input neurons?
+            # Wait, sharded_ablate.py:
+            # "W_gpu is [out_features, in_features]" in the comment, but code says W_gpu = W.T
+            # If W is [out, in], W.T is [in, out].
+            # "W_norm = torch.norm(W_gpu, dim=1, keepdim=True)" -> Norm of rows of [in, out].
+            # Rows of [in, out] are input dimensions.
+            # So it normalizes per input dimension?
+            # "normalized per output neuron" comment says otherwise.
+            # If it meant per output neuron, it should be dim=0 of [in, out].
+            
+            # Let's re-read sharded_ablate.py carefully.
+            # "W_gpu = W.to(...).T"
+            # "W_norm = torch.norm(W_gpu, dim=1, keepdim=True)"
+            # "W_direction = torch.nn.functional.normalize(W_gpu, dim=1)"
+            # If W_gpu is [in, out], dim=1 is across output neurons.
+            # So for a fixed input feature, we normalize the vector of weights to all outputs.
+            # This seems to be normalizing the "input embedding" of the layer?
+            
+            # Then:
+            # "projection = torch.matmul(W_direction, refusal_normalized)"
+            # W_direction [in, out] @ refusal [out] -> [in]
+            # This projects the "input embedding" onto the refusal direction (which is in output space).
+            
+            # Then subtract:
+            # W_dir_new = W_dir - scale * outer(proj, refusal)
+            # [in, out] - [in] * [out]
+            
+            # This removes the component of the weight that maps to the refusal direction.
+            
+            # So for W [out, in]:
+            # We normalize columns (dim=0).
+            # W_norm = norm(W, dim=0) [1, in]
+            # W_dir = normalize(W, dim=0) [out, in]
+            # proj = r @ W_dir [in]
+            # W_dir_new = W_dir - scale * outer(r, proj)
+            # normalize(W_dir_new, dim=0)
+            # W_mod = W_norm * W_dir_new
+            
+            refusal_normalized = torch.nn.functional.normalize(refusal_dir_gpu, dim=0)
+            
+            W_norm = torch.norm(W_gpu, dim=0, keepdim=True) # [1, in]
+            W_direction = torch.nn.functional.normalize(W_gpu, dim=0) # [out, in]
+            
+            projection = torch.matmul(refusal_normalized, W_direction) # [in]
+            
+            W_direction_new = W_direction - scale_factor * torch.outer(refusal_normalized, projection)
+            
+            W_direction_new = torch.nn.functional.normalize(W_direction_new, dim=0)
+            
+            W_modified = W_norm * W_direction_new
+            
+        else:
+            # Mismatch
+            return W.detach().clone()
+        
+        result = W_modified.to('cpu', dtype=original_dtype, non_blocking=True)
+        
+        del W_gpu, refusal_dir_gpu, refusal_normalized
+        del W_direction, W_direction_new, W_norm, projection, W_modified
+        
+    return result
 
 def main():
     parser = argparse.ArgumentParser(description="Generate LoRA adapter for model abliteration.")
@@ -93,10 +195,11 @@ def main():
     measures = torch.load(measurements_path)
     
     # Prepare LoRA config
+    lora_rank = 32
     lora_config = {
         "peft_type": "LORA",
-        "r": 1,  # Rank 1 is sufficient for single-direction ablation
-        "lora_alpha": 1,
+        "r": lora_rank,
+        "lora_alpha": lora_rank, # Usually alpha = rank for full rank updates
         "lora_dropout": 0.0,
         "bias": "none",
         "target_modules": [],
@@ -207,59 +310,68 @@ def main():
                 
             refusal_dir = torch.nn.functional.normalize(refusal_dir, dim=-1)
             
-            # Calculate LoRA weights
-            # W_new = W - scale * outer(projection, refusal)
-            # projection = W @ refusal
-            # Update = -scale * (W @ refusal) @ refusal^T
-            # LoRA = A @ B
-            # Let B = refusal^T (1, in_features)
-            # Let A = -scale * (W @ refusal) (out_features, 1)
+            # Calculate LoRA weights using SVD on the delta
+            # This ensures we capture the exact transformation (including norm preservation)
             
-            W = state_dict[weight_key].float()
-            # W shape: [out_features, in_features]
-            # refusal shape: [in_features] (or [hidden_size])
-            
-            # Check shapes
+            W = state_dict[weight_key]
             scale = float(ablation_cfg['scale'])
             
-            if W.shape[1] == refusal_dir.shape[0]:
-                # Case 1: Input dimension matches refusal (e.g. Gate, Up, Q, K, V)
-                # We remove refusal from the input projection.
-                # W_new = W - scale * (W @ u) @ u.T
-                # A = -scale * (W @ u)
-                # B = u.T
-                
-                A = -scale * (W @ refusal_dir) # [out_features]
-                A = A.unsqueeze(1) # [out_features, 1]
-                B = refusal_dir.unsqueeze(0) # [1, in_features]
-                
-            elif W.shape[0] == refusal_dir.shape[0]:
-                # Case 2: Output dimension matches refusal (e.g. Down, O_proj)
-                # We remove refusal from the output generation.
-                # W_new = W - scale * u @ (u.T @ W)
-                # A = -scale * u
-                # B = u.T @ W
-                
-                A = -scale * refusal_dir.unsqueeze(1) # [out_features, 1]
-                B = refusal_dir.unsqueeze(0) @ W # [1, in_features]
-                
-            else:
-                # Mismatch
-                print(f"Skipping {module_name}: shape mismatch {W.shape} vs {refusal_dir.shape}")
-                continue
+            # Compute modified weight
+            W_modified = modify_tensor_norm_preserved(W, refusal_dir, scale)
+            
+            # Compute delta
+            # W_new = W + A @ B
+            # Delta = W_new - W = A @ B
+            Delta = (W_modified - W).float()
+            
+            # SVD decomposition
+            # We want rank 1 approximation
+            try:
+                U, S, Vh = torch.linalg.svd(Delta, full_matrices=False)
+            except RuntimeError:
+                # Fallback to cpu if cuda fails (OOM)
+                U, S, Vh = torch.linalg.svd(Delta.cpu(), full_matrices=False)
+                U = U.to(Delta.device)
+                S = S.to(Delta.device)
+                Vh = Vh.to(Delta.device)
+            
+            # Top k components
+            k = lora_rank
+            # Ensure we don't exceed available dimensions
+            k = min(k, U.shape[1], Vh.shape[0])
+            
+            u = U[:, :k]
+            s = S[:k]
+            v = Vh[:k, :]
+            
+            # Distribute sigma
+            # A = u * sqrt(s)
+            # B = v * sqrt(s)
+            sqrt_s = torch.sqrt(s)
+            
+            # A: [out, k]
+            # B: [k, in]
+            A = u * sqrt_s.unsqueeze(0)
+            B = v * sqrt_s.unsqueeze(1)
+            
+            # Transpose B to match LoRA shape [k, in]?
+            # Vh is [in, in] (transposed V).
+            # v = Vh[:k, :] is [k, in].
+            # B should be [k, in].
+            # v * sqrt_s.unsqueeze(1) -> [k, in] * [k, 1] -> [k, in]. Correct.
             
             # Save to lora_weights
-            # PEFT naming convention:
-            # base_model.model.layers.X.self_attn.o_proj.lora_A.weight
-            # base_model.model.layers.X.self_attn.o_proj.lora_B.weight
-            
             suffix = module_name.replace("model.", "") # layers.X...
             target_modules_list.add(module_name.split('.')[-1])
             
-            lora_weights[f"base_model.model.{suffix}.lora_A.weight"] = A.contiguous()
-            lora_weights[f"base_model.model.{suffix}.lora_B.weight"] = B.contiguous()
+            # Use bfloat16 to match model dtype (assuming model is bf16)
+            # This avoids the "self and mat2 must have the same dtype" error in vLLM
+            dtype = torch.bfloat16
             
-            del W, A, B
+            lora_weights[f"base_model.model.{suffix}.lora_A.weight"] = A.to(dtype).contiguous()
+            lora_weights[f"base_model.model.{suffix}.lora_B.weight"] = B.to(dtype).contiguous()
+            
+            del W, W_modified, Delta, U, S, Vh, A, B
             
         del state_dict
         torch.cuda.empty_cache()
