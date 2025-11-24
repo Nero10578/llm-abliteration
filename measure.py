@@ -144,7 +144,13 @@ def compute_refusals(
         layer_base = layer_base.language_model
     # For GLM models, the base might be directly accessible
     if not hasattr(layer_base, "layers"):
-        raise ValueError(f"Could not find layers in model structure. Model base: {type(layer_base)}")
+        # Try to access layers through different possible paths for GLM models
+        if hasattr(model, "transformer") and hasattr(model.transformer, "layers"):
+            layer_base = model.transformer
+        elif hasattr(model, "model") and hasattr(model.model, "layers"):
+            layer_base = model.model
+        else:
+            raise ValueError(f"Could not find layers in model structure. Model base: {type(layer_base)}")
     num_layers = len(layer_base.layers)
     pos = -1
     # option for layer sweep
@@ -307,7 +313,8 @@ if __name__ == "__main__":
     # autodetect BitsAndBytes quant; overrides option
     if hasattr(model_config,"quantization_config"):
         bnb_config = getattr(model_config, "quantization_config")
-        if (bnb_config["load_in_4bit"] == True):
+        # Check for different quantization methods
+        if "load_in_4bit" in bnb_config and bnb_config["load_in_4bit"] == True:
             qbit = "4bit"
             # Override precision with compute dtype from quant config if available
             if "bnb_4bit_compute_dtype" in bnb_config and bnb_config["bnb_4bit_compute_dtype"]:
@@ -318,8 +325,25 @@ if __name__ == "__main__":
                 else:
                     precision = compute_dtype
                 print(f"Using compute dtype from quant config: {precision}")
-        elif (bnb_config["load_in_8bit"] == True):
+        elif "load_in_8bit" in bnb_config and bnb_config["load_in_8bit"] == True:
             qbit = "8bit"
+        elif "quant_method" in bnb_config:
+            # Handle other quantization methods like compressed-tensors, FP8, etc.
+            quant_method = bnb_config["quant_method"]
+            print(f"Detected quantization method: {quant_method}")
+            
+            # For compressed-tensors quantization, extract precision from model config if available
+            if quant_method == "compressed-tensors" and hasattr(model_config, "dtype"):
+                if isinstance(model_config.dtype, str):
+                    dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
+                    precision = dtype_map.get(model_config.dtype, precision)
+                else:
+                    precision = model_config.dtype
+                print(f"Using dtype from model config: {precision}")
+            
+            # For compressed-tensors and other methods, we don't need to set up BitsAndBytesConfig
+            # The model is already quantized and we just need to load it
+            qbit = None
 
     if qbit == "4bit":
         quant_config = BitsAndBytesConfig(
@@ -350,10 +374,12 @@ if __name__ == "__main__":
     # Use device_map="auto" to automatically distribute across all available GPUs
     # This enables multi-GPU usage for large models
     if hasattr(model_config, "quantization_config"):
-        model = AutoModelForCausalLM.from_pretrained(
+        # For pre-quantized models, don't pass quantization_config
+        model = model_loader.from_pretrained(
             args.model,
 #            trust_remote_code=True,
             dtype=precision,
+            low_cpu_mem_usage=True,
             device_map="auto",  # Changed from "cuda" to "auto" for multi-GPU support
             attn_implementation="flash_attention_2" if args.flash_attn else None,
         )
@@ -377,7 +403,13 @@ if __name__ == "__main__":
         layer_base = layer_base.language_model
     # Verify we can access layers for GLM and other architectures
     if not hasattr(layer_base, "layers"):
-        raise ValueError(f"Could not find layers in model structure. Model base: {type(layer_base)}")
+        # Try to access layers through different possible paths for GLM models
+        if hasattr(model, "transformer") and hasattr(model.transformer, "layers"):
+            layer_base = model.transformer
+        elif hasattr(model, "model") and hasattr(model.model, "layers"):
+            layer_base = model.model
+        else:
+            raise ValueError(f"Could not find layers in model structure. Model base: {type(layer_base)}")
 
     # Load processor for vision models, tokenizer for text-only models
     processor = None

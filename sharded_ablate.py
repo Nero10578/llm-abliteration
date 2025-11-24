@@ -29,7 +29,7 @@ def magnitude_sparsify(tensor: torch.Tensor, fraction: float) -> torch.Tensor:
 """
 A warning regarding PyTorch's convention vs. Safetensors storage:
 
-PyTorch nn.Linear layers store weights as [out_features, in_features] - each row is an output neuron's weights
+PyTorch nn. Linear layers store weights as [out_features, in_features] - each row is an output neuron's weights
 Safetensors (HuggingFace format) stores them as [in_features, out_features] - transposed!
 """
 
