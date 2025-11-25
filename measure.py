@@ -352,7 +352,7 @@ if __name__ == "__main__":
     if hasattr(model_config, "quantization_config"):
         model = AutoModelForCausalLM.from_pretrained(
             args.model,
-#            trust_remote_code=True,
+            trust_remote_code=True,
             dtype=precision,
             device_map="auto",  # Changed from "cuda" to "auto" for multi-GPU support
             attn_implementation="flash_attention_2" if args.flash_attn else None,
@@ -360,7 +360,7 @@ if __name__ == "__main__":
     else:
         model = model_loader.from_pretrained(
             args.model,
-#            trust_remote_code=True,
+            trust_remote_code=True,
             dtype=precision,
             low_cpu_mem_usage=True,
             device_map="auto",  # Changed from "cuda" to "auto" for multi-GPU support
@@ -395,13 +395,13 @@ if __name__ == "__main__":
             has_vision = False
             tokenizer = AutoTokenizer.from_pretrained(
                 args.model,
-#                trust_remote_code=True,
+                trust_remote_code=True,
                 padding=True,
             )
     else:
         tokenizer = AutoTokenizer.from_pretrained(
             args.model,
-#            trust_remote_code=True,
+            trust_remote_code=True,
             padding=True,
         )
 

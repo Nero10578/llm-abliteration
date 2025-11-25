@@ -28,14 +28,7 @@ This repository now supports Mixture of Experts models like GLM-4.5-Air. For MoE
 - Standard MLP down projections (`mlp.down_proj.weight`, if present)
 - **All expert projections** (`mlp.experts.[i].gate_proj.weight`, `up_proj.weight`, `down_proj.weight`)
 - **All shared expert projections** (`mlp.shared_experts.gate_proj.weight`, `up_proj.weight`, `down_proj.weight`)
-- **Routing gate weights** (`mlp.gate.weight`) - **Critical for MoE models!**
-
-**Why comprehensive ablation matters for MoE:**
-- Refusal behavior can be encoded in any expert projection (gate, up, or down)
-- The routing gate determines which experts activate - ablating it prevents routing to "refusal experts"
-- MoE models require more aggressive ablation than dense models due to expert specialization
-
-See [`glm4-air-example.yml`](glm4-air-example.yml) for an example configuration.
+- **Routing gate weights** (`mlp.gate.weight`)
 
 ## Quick Start
 
@@ -92,20 +85,6 @@ This script automatically analyzes your measurements and generates an optimized 
 - **Balanced mode** (default): Selects ~12 best layers
 - **Conservative mode** (`--conservative`): Selects ~8 highest-quality layers only
 - **Aggressive mode** (`--aggressive`): Selects ~20 layers with lower threshold
-
-Example usage:
-```shell
-# Balanced approach (recommended)
-python generate_ablation_config.py -m GLM.refuse -p /home/arli/models/GLM-4.5-Air
-
-# Conservative approach (safer, fewer layers)
-python generate_ablation_config.py -m GLM.refuse -p /home/arli/models/GLM-4.5-Air --conservative
-
-# Custom thresholds
-python generate_ablation_config.py -m GLM.refuse -p /home/arli/models/GLM-4.5-Air --min-quality 0.020 --top-n 10
-
-# Show detailed analysis
-python generate_ablation_config.py -m GLM.refuse -p /home/arli/models/GLM-4.5-Air --show-analysis
 ```
 
 The script will create a `<measurement_file>_config.yml` file ready for ablation.
@@ -118,24 +97,6 @@ python sharded_ablate.py <abliteration_yaml_file>
 You can use the auto-generated config from the previous step, or manually create a YAML file.
 Look at the example YAML files to see how this is structured.
 YAML was opted for in order to allow more than one source layer for refusal direction measurement, and for different strategies to be applied per destination layer.
-
-### Convert abliteration to LoRA adapter (recommended!)
-
-```shell
-python ablation_to_lora.py \
-    --original <path_to_original_model> \
-    --abliterated <path_to_abliterated_model> \
-    --output <path_to_lora_adapter> \
-    --rank 64
-```
-
-**Why use LoRA?**
-- **99% smaller** than full model (400 MB vs 50 GB)
-- **Reversible** - keep original model unchanged
-- **Easy to share** - upload to HuggingFace
-- **Combinable** - stack with other LoRAs
-
-See [`LORA_CONVERSION_GUIDE.md`](LORA_CONVERSION_GUIDE.md) for detailed instructions.
 
 ### Chat with your abliterated model
 
