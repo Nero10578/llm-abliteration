@@ -27,6 +27,9 @@ def has_tied_weights(model_type: str) -> bool:
     # GLM models (ChatGLM, GLM-4, etc.) typically do not use tied weights
     # but we include them here for completeness and future compatibility
     glm_family_types = {"chatglm", "glm"}
+    
+    # GPT-OSS models (GPT-OSS-20B, etc.) typically do not use tied weights
+    gpt_oss_family_types = {"gptoss"}
 
     # The check is case-insensitive for robustness
     model_type_lower = model_type.lower()
@@ -38,6 +41,10 @@ def has_tied_weights(model_type: str) -> bool:
     # GLM models typically don't use tied weights, but check for future variants
     # For now, return False for GLM models
     if model_type_lower in glm_family_types or "glm" in model_type_lower:
+        return False
+    
+    # GPT-OSS models typically don't use tied weights
+    if model_type_lower in gpt_oss_family_types or "gptoss" in model_type_lower:
         return False
     
     return False
