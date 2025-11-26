@@ -199,7 +199,6 @@ def ablate_by_layers_sharded(
         # GPT-OSS-20B specific patterns
         gpt_oss_experts_down_proj_prefix = f"{layer_prefix}.layers.{layer}.mlp.experts."
         gpt_oss_router_pattern = f"{layer_prefix}.layers.{layer}.mlp.router.weight"
-        gpt_oss_router_bias_pattern = f"{layer_prefix}.layers.{layer}.mlp.router.bias"
         
         # Find keys that match
         for key, shard_file in weight_map.items():
@@ -230,11 +229,6 @@ def ablate_by_layers_sharded(
                 shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))
             # GPT-OSS-20B router weight - CRITICAL for preventing refusal routing
             elif key == gpt_oss_router_pattern:
-                if shard_file not in shard_modifications:
-                    shard_modifications[shard_file] = []
-                shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))
-            # GPT-OSS-20B router bias - CRITICAL for preventing refusal routing
-            elif key == gpt_oss_router_bias_pattern:
                 if shard_file not in shard_modifications:
                     shard_modifications[shard_file] = []
                 shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))

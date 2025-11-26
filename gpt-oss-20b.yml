@@ -48,6 +48,5 @@ ablate:
 # - Key parameters that will be ablated:
 #   * self_attn.o_proj.weight (attention output projection)
 #   * mlp.experts.*.down_proj (expert down-projection only)
-#   * mlp.router.weight (expert routing weights)
-#   * mlp.router.bias (expert routing bias)
+#   * mlp.router.weight (expert routing weights only, not bias)
 # - The "sinks" parameter in self_attn is unique to GPT-OSS and will be ignored

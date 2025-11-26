@@ -11,7 +11,7 @@ GPT-OSS-20B is a 24-layer transformer model with the following key characteristi
 - **Architecture**: Mixture of Experts (MoE) with expert routing
 - **Unique Features**: 
   - `self_attn.sinks` parameter (unique to GPT-OSS)
-  - `mlp.router.weight` and `mlp.router.bias` for expert routing
+  - `mlp.router.weight` for expert routing (bias not ablated)
   - `mlp.experts.gate_up_proj` and `mlp.experts.down_proj` for expert projections
 
 ## Step 1: Measure the Model
@@ -99,7 +99,6 @@ The scripts automatically handle these GPT-OSS-20B specific parameters:
 1. **Attention Output Projection**: `model.layers.{N}.self_attn.o_proj.weight`
 2. **Expert Down Projections**: `model.layers.{N}.mlp.experts.*.down_proj` (only down_proj, not gate_up_proj)
 3. **Router Weights**: `model.layers.{N}.mlp.router.weight`
-5. **Router Biases**: `model.layers.{N}.mlp.router.bias`
 
 ### Ignored Parameters
 
