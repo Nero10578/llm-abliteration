@@ -1,0 +1,92 @@
+# Optimized ablation configuration for GLM-4-Air
+# Generated from: glm4-air.refuse
+# Model type: MoE
+# Best measurement layer: 18 (quality: 0.0439)
+# Selected 18 layers for ablation (focused on high-quality peaks)
+# Layer range: 4-25 (targeted selection)
+#
+# Optimization strategy:
+#   - Core peak layers (18-22): scale=2.5 (highest quality)
+#   - Secondary peak (15-17, 23-25): scale=2.0 (good quality)
+#   - Early layers (4-8): scale=1.5 (moderate quality)
+#   - Focused on actual signal quality peaks rather than broad coverage
+#
+# Top 5 layers by signal quality:
+#   1. Layer 18: quality=0.0439, snr=0.4418, cosine=0.9006
+#   2. Layer 19: quality=0.0381, snr=0.4225, cosine=0.9098
+#   3. Layer 20: quality=0.0369, snr=0.4172, cosine=0.9115
+#   4. Layer 21: quality=0.0297, snr=0.3878, cosine=0.9233
+#   5. Layer 22: quality=0.0296, snr=0.3888, cosine=0.9240
+
+model: /home/arli/models/GLM-4.5-Air-Derestricted
+measurements: glm4-air.refuse
+output: glm4-optimal.yml
+ablate:
+# Early layers with moderate signal quality
+- layer: 4
+  measurement: 18
+  scale: 1.5
+  sparsity: 0.0
+- layer: 5
+  measurement: 18
+  scale: 1.5
+  sparsity: 0.0
+- layer: 6
+  measurement: 18
+  scale: 1.5
+  sparsity: 0.0
+- layer: 7
+  measurement: 18
+  scale: 1.5
+  sparsity: 0.0
+- layer: 8
+  measurement: 18
+  scale: 1.5
+  sparsity: 0.0
+# Secondary peak leading into main peak
+- layer: 15
+  measurement: 18
+  scale: 2.0
+  sparsity: 0.0
+- layer: 16
+  measurement: 18
+  scale: 2.0
+  sparsity: 0.0
+- layer: 17
+  measurement: 18
+  scale: 2.0
+  sparsity: 0.0
+# Core peak - highest signal quality layers
+- layer: 18
+  measurement: 18
+  scale: 2.5
+  sparsity: 0.0
+- layer: 19
+  measurement: 18
+  scale: 2.5
+  sparsity: 0.0
+- layer: 20
+  measurement: 18
+  scale: 2.5
+  sparsity: 0.0
+- layer: 21
+  measurement: 18
+  scale: 2.5
+  sparsity: 0.0
+- layer: 22
+  measurement: 18
+  scale: 2.5
+  sparsity: 0.0
+# Secondary peak trailing main peak
+- layer: 23
+  measurement: 18
+  scale: 2.0
+  sparsity: 0.0
+- layer: 24
+  measurement: 18
+  scale: 2.0
+  sparsity: 0.0
+- layer: 25
+  measurement: 18
+  scale: 2.0
+  sparsity: 0.0

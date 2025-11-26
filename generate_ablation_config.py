@@ -139,7 +139,56 @@ def analyze_measurements(measurements_path: str) -> List[Dict]:
     return layer_stats
 
 
-def select_layers(
+def detect_signal_peaks(layer_stats: List[Dict]) -> List[List[int]]:
+    """
+    Detect clusters of high-quality layers (peaks) in the signal quality data.
+    
+    Returns:
+        List of clusters, where each cluster is a list of layer indices
+    """
+    if not layer_stats:
+        return []
+    
+    # Sort by layer index for peak detection
+    sorted_by_layer = sorted(layer_stats, key=lambda x: x['layer'])
+    
+    # Calculate quality threshold based on distribution
+    qualities = [stat['signal_quality'] for stat in sorted_by_layer]
+    max_quality = max(qualities)
+    
+    # Dynamic threshold: 15% of max quality or 0.005, whichever is higher
+    quality_threshold = max(max_quality * 0.15, 0.005)
+    
+    clusters = []
+    current_cluster = []
+    
+    for stat in sorted_by_layer:
+        if stat['signal_quality'] >= quality_threshold:
+            if not current_cluster:
+                current_cluster = [stat['layer']]
+            else:
+                # Check if this layer is adjacent to the current cluster
+                if stat['layer'] == current_cluster[-1] + 1:
+                    current_cluster.append(stat['layer'])
+                else:
+                    # Start a new cluster
+                    if current_cluster:
+                        clusters.append(current_cluster)
+                    current_cluster = [stat['layer']]
+        else:
+            # End current cluster if it exists
+            if current_cluster:
+                clusters.append(current_cluster)
+                current_cluster = []
+    
+    # Add the last cluster if it exists
+    if current_cluster:
+        clusters.append(current_cluster)
+    
+    return clusters
+
+
+def select_layers_optimized(
     layer_stats: List[Dict],
     mode: str = 'balanced',
     min_quality: float = None,
@@ -147,12 +196,12 @@ def select_layers(
     is_moe: bool = False,
 ) -> Tuple[List[int], int]:
     """
-    Select layers for ablation based on signal quality.
+    Select layers for ablation using optimized peak detection strategy.
     
     Args:
         layer_stats: List of layer statistics
         mode: 'conservative', 'balanced', or 'aggressive'
-        min_quality: Minimum signal quality threshold
+        min_quality: Minimum signal quality threshold (overrides auto-detection)
         top_n: Maximum number of layers to select (None = use mode defaults)
         is_moe: Whether this is a MoE model (affects defaults)
     
@@ -161,46 +210,99 @@ def select_layers(
     """
     num_total_layers = len(layer_stats)
     
-    # Mode-specific defaults using percentages
-    if is_moe:
-        # MoE models distribute refusal more, so we target a larger percentage of layers
-        mode_configs = {
-            'conservative': {'min_quality': 0.015, 'pct': 0.35}, # ~35% of layers
-            'balanced': {'min_quality': 0.006, 'pct': 0.55},     # ~55% of layers
-            'aggressive': {'min_quality': 0.004, 'pct': 0.75},   # ~75% of layers
-        }
-    else:
-        # Dense models have more localized refusal
-        mode_configs = {
-            'conservative': {'min_quality': 0.025, 'pct': 0.20}, # ~20% of layers
-            'balanced': {'min_quality': 0.015, 'pct': 0.35},     # ~35% of layers
-            'aggressive': {'min_quality': 0.010, 'pct': 0.50},   # ~50% of layers
-        }
-    
-    if mode in mode_configs:
-        config = mode_configs[mode]
-        if min_quality is None:
-            min_quality = config['min_quality']
-        if top_n is None:
-            top_n = int(num_total_layers * config['pct'])
-            # Ensure at least a few layers are selected if model is small
-            top_n = max(top_n, 5)
-    
     # Find best measurement layer (highest signal quality)
     best_layer = layer_stats[0]['layer']
+    best_quality = layer_stats[0]['signal_quality']
     
-    # Select layers above quality threshold
-    selected = []
-    for stat in layer_stats:
-        if stat['signal_quality'] >= min_quality:
-            selected.append(stat['layer'])
-            if top_n and len(selected) >= top_n:
-                break
+    # Detect signal quality peaks
+    clusters = detect_signal_peaks(layer_stats)
     
-    # Sort selected layers by index for cleaner YAML
-    selected.sort()
+    # Mode-specific selection strategy
+    if mode == 'conservative':
+        # Only select the best cluster and immediate neighbors
+        max_clusters = 1
+        cluster_expansion = 1
+    elif mode == 'aggressive':
+        # Select more clusters with more expansion
+        max_clusters = 4
+        cluster_expansion = 3
+    else:  # balanced
+        max_clusters = 2
+        cluster_expansion = 2
+    
+    # Sort clusters by their maximum quality
+    cluster_scores = []
+    for cluster in clusters:
+        max_cluster_quality = max(
+            stat['signal_quality'] for stat in layer_stats
+            if stat['layer'] in cluster
+        )
+        cluster_scores.append((cluster, max_cluster_quality))
+    
+    cluster_scores.sort(key=lambda x: x[1], reverse=True)
+    
+    # Select top clusters
+    selected_layers = set()
+    selected_clusters = cluster_scores[:max_clusters]
+    
+    for cluster, _ in selected_clusters:
+        # Add cluster layers with expansion
+        cluster_min = min(cluster)
+        cluster_max = max(cluster)
+        
+        # Expand cluster boundaries
+        expanded_min = max(0, cluster_min - cluster_expansion)
+        expanded_max = min(num_total_layers - 1, cluster_max + cluster_expansion)
+        
+        # Add all layers in expanded range
+        for layer in range(expanded_min, expanded_max + 1):
+            selected_layers.add(layer)
+    
+    # Apply quality threshold if specified
+    if min_quality is not None:
+        quality_filtered = set()
+        for layer in selected_layers:
+            layer_quality = next(
+                (stat['signal_quality'] for stat in layer_stats if stat['layer'] == layer),
+                0
+            )
+            if layer_quality >= min_quality:
+                quality_filtered.add(layer)
+        selected_layers = quality_filtered
+    
+    # Apply top_n limit if specified
+    if top_n is not None:
+        # Sort selected layers by quality and take top N
+        selected_with_quality = []
+        for layer in selected_layers:
+            layer_quality = next(
+                (stat['signal_quality'] for stat in layer_stats if stat['layer'] == layer),
+                0
+            )
+            selected_with_quality.append((layer, layer_quality))
+        
+        selected_with_quality.sort(key=lambda x: x[1], reverse=True)
+        selected_layers = set(layer for layer, _ in selected_with_quality[:top_n])
+    
+    # Convert to sorted list
+    selected = sorted(list(selected_layers))
     
     return selected, best_layer
+
+
+def select_layers(
+    layer_stats: List[Dict],
+    mode: str = 'balanced',
+    min_quality: float = None,
+    top_n: int = None,
+    is_moe: bool = False,
+) -> Tuple[List[int], int]:
+    """
+    Select layers for ablation using the optimized peak detection strategy.
+    
+    This function now delegates to select_layers_optimized for better results.
+    """
+    return select_layers_optimized(layer_stats, mode, min_quality, top_n, is_moe)
 
 
 def generate_yaml_config(
@@ -216,7 +318,7 @@ def generate_yaml_config(
     is_moe: bool = False,
 ) -> None:
     """
-    Generate YAML configuration file for ablation.
+    Generate optimized YAML configuration file for ablation.
     
     Args:
         model_path: Path to the model
@@ -233,34 +335,50 @@ def generate_yaml_config(
     quality_map = {stat['layer']: stat['signal_quality'] for stat in layer_stats}
     best_quality = quality_map[best_measurement_layer]
     
-    # Determine core layer range (peak ± 7 layers for MoE, ± 5 for dense)
-    core_range = 7 if is_moe else 5
-    core_layers = set(range(
-        max(0, best_measurement_layer - core_range),
-        min(len(layer_stats), best_measurement_layer + core_range + 1)
-    ))
+    # Detect signal peaks for intelligent scale assignment
+    clusters = detect_signal_peaks(layer_stats)
     
-    # Build ablation entries with graduated scale
+    # Find the primary peak (contains the best layer)
+    primary_peak = None
+    for cluster in clusters:
+        if best_measurement_layer in cluster:
+            primary_peak = cluster
+            break
+    
+    # Build ablation entries with optimized scale assignment
     ablate_entries = []
     for layer in selected_layers:
         layer_quality = quality_map.get(layer, 0)
         
-        # MoE models use higher base scale and graduated approach
+        # Optimized scale assignment based on quality tiers
         if is_moe:
-            if layer in core_layers:
-                # Core layers: highest scale
+            # MoE models: more aggressive scaling for high-quality layers
+            if layer_quality >= best_quality * 0.8:
+                # Elite tier: highest quality layers
+                layer_scale = scale * 2.5
+            elif layer_quality >= best_quality * 0.6:
+                # High tier: very good quality layers
                 layer_scale = scale * 2.0
-            else:
-                # Extended layers: moderate scale
+            elif layer_quality >= best_quality * 0.3:
+                # Medium tier: moderate quality layers
                 layer_scale = scale * 1.5
-        else:
-            # Dense models: standard scale with optional decay
-            if scale_decay and layer_quality < best_quality * 0.7:
-                layer_scale = scale * 0.8
-            elif scale_decay and layer_quality < best_quality * 0.5:
-                layer_scale = scale * 0.6
             else:
-                layer_scale = scale
+                # Low tier: minimal quality layers
+                layer_scale = scale * 1.2
+        else:
+            # Dense models: more conservative scaling
+            if layer_quality >= best_quality * 0.8:
+                layer_scale = scale * 2.0
+            elif layer_quality >= best_quality * 0.6:
+                layer_scale = scale * 1.5
+            elif layer_quality >= best_quality * 0.3:
+                layer_scale = scale * 1.2
+            else:
+                layer_scale = scale * 1.0
+        
+        # Apply additional scale decay if requested
+        if scale_decay and layer_quality < best_quality * 0.2:
+            layer_scale *= 0.8
         
         ablate_entries.append({
             'layer': int(layer),
@@ -280,18 +398,22 @@ def generate_yaml_config(
     # Write YAML file
     with open(measurements_path.replace('.refuse', '_config.yml'), 'w') as f:
         # Write header comment
-        f.write(f"# Auto-generated ablation configuration\n")
+        f.write(f"# Optimized auto-generated ablation configuration\n")
         f.write(f"# Generated from: {measurements_path}\n")
         f.write(f"# Model type: {'MoE' if is_moe else 'Dense'}\n")
         f.write(f"# Best measurement layer: {best_measurement_layer} (quality: {best_quality:.4f})\n")
         f.write(f"# Selected {len(selected_layers)} layers for ablation\n")
         f.write(f"# Layer range: {min(selected_layers)}-{max(selected_layers)}\n")
+        f.write(f"#\n")
+        f.write(f"# Optimization strategy:\n")
+        f.write(f"#   - Peak detection: {len(clusters)} signal quality clusters detected\n")
+        if primary_peak:
+            f.write(f"#   - Primary peak: layers {min(primary_peak)}-{max(primary_peak)}\n")
         if is_moe:
-            f.write(f"#\n")
-            f.write(f"# MoE-specific settings:\n")
-            f.write(f"#   - Core layers ({best_measurement_layer}±{7}): scale=2.0\n")
-            f.write(f"#   - Extended layers: scale=1.5\n")
-            f.write(f"#   - More layers selected due to distributed refusal in MoE\n")
+            f.write(f"#   - MoE scaling: Elite (2.5x), High (2.0x), Medium (1.5x), Low (1.2x)\n")
+        else:
+            f.write(f"#   - Dense scaling: Elite (2.0x), High (1.5x), Medium (1.2x), Low (1.0x)\n")
+        f.write(f"#   - Focused on high-quality peaks rather than broad coverage\n")
         f.write(f"#\n")
         f.write(f"# Top 5 layers by signal quality:\n")
         for i, stat in enumerate(layer_stats[:5]):
@@ -302,7 +424,7 @@ def generate_yaml_config(
         # Write YAML content
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
     
-    print(f"\nConfiguration saved to: {measurements_path.replace('.refuse', '_config.yml')}")
+    print(f"\nOptimized configuration saved to: {measurements_path.replace('.refuse', '_config.yml')}")
 
 
 def main():
@@ -429,7 +551,7 @@ def main():
     model_type_str = "MoE" if is_moe else "Dense"
     print(f"\nDetected model type: {model_type_str}")
     
-    # Select layers
+    # Select layers using optimized approach
     selected_layers, best_layer = select_layers(
         layer_stats,
         mode=mode,
@@ -438,17 +560,35 @@ def main():
         is_moe=is_moe,
     )
     
-    print(f"\nMode: {mode}")
+    # Create quality lookup for analysis
+    quality_map = {stat['layer']: stat['signal_quality'] for stat in layer_stats}
+    
+    # Detect peaks for analysis
+    clusters = detect_signal_peaks(layer_stats)
+    
+    print(f"\nOptimized Analysis Results:")
+    print(f"Mode: {mode}")
     print(f"Model type: {model_type_str}")
     print(f"Selected {len(selected_layers)} layers: {selected_layers}")
     print(f"Best measurement layer: {best_layer}")
     print(f"Quality range: {layer_stats[-1]['signal_quality']:.4f} - {layer_stats[0]['signal_quality']:.4f}")
+    print(f"Signal peaks detected: {len(clusters)}")
+    
+    for i, cluster in enumerate(clusters[:3]):  # Show top 3 clusters
+        cluster_qualities = [quality_map[layer] for layer in cluster if layer in quality_map]
+        if cluster_qualities:
+            max_cluster_quality = max(cluster_qualities)
+            print(f"  Peak {i+1}: layers {min(cluster)}-{max(cluster)} (max quality: {max_cluster_quality:.4f})")
     
     if is_moe:
-        print(f"\nMoE-specific settings:")
-        print(f"  - Using higher scale factors (2.0 core, 1.5 extended)")
-        print(f"  - Selecting more layers ({len(selected_layers)} vs ~{len(selected_layers)//2} for dense)")
-        print(f"  - Core layers: {best_layer}±7")
+        print(f"\nMoE-optimized settings:")
+        print(f"  - Using tiered scaling (2.5x elite, 2.0x high, 1.5x medium, 1.2x low)")
+        print(f"  - Focused on high-quality peaks vs broad coverage")
+        print(f"  - Peak-based layer selection")
+    else:
+        print(f"\nDense-optimized settings:")
+        print(f"  - Using conservative scaling (2.0x elite, 1.5x high, 1.2x medium, 1.0x low)")
+        print(f"  - Targeted peak detection")
     
     # Generate YAML
     generate_yaml_config(
