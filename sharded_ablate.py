@@ -52,10 +52,13 @@ def modify_tensor_norm_preserved(
         # Transpose here to convert from safetensors convention
         if W.dim() == 2:
             W_gpu = W.to(device, dtype=torch.float32, non_blocking=True).T
-        else:
-            # Handle tensors with dimensions other than 2
+        elif W.dim() == 3:
+            # For 3D expert tensors, don't transpose here - handle in modify_3d_expert_tensor
             W_gpu = W.to(device, dtype=torch.float32, non_blocking=True)
-            if W_gpu.dim() > 2:
+        else:
+            # Handle tensors with dimensions other than 2 or 3
+            W_gpu = W.to(device, dtype=torch.float32, non_blocking=True)
+            if W_gpu.dim() > 3:
                 W_gpu = W_gpu.mT  # Use mT for batches of matrices
             elif W_gpu.dim() == 1:
                 W_gpu = W_gpu.unsqueeze(1)  # Convert 1D to 2D for compatibility
@@ -98,49 +101,57 @@ def modify_tensor_norm_preserved(
                 print(f"    Warning: Skipping weight with incompatible shape {W.shape} (refusal_dir: {refusal_dir.shape})")
                 return W.detach().clone()
         else:
-            # Standard ablation for compatible weights
-            # Normalize refusal direction
-            refusal_normalized = torch.nn.functional.normalize(refusal_dir_gpu, dim=0)
-
-            # Decompose weight matrix
-            # W_gpu is [out_features, in_features]
-            W_norm = torch.norm(W_gpu, dim=1, keepdim=True)  # [out_features, 1]
-            W_direction = torch.nn.functional.normalize(W_gpu, dim=1)  # normalized per output neuron
-            
-            # Check if dimensions are compatible for standard ablation
-            if W_direction.shape[1] == refusal_normalized.shape[0]:
-                # Standard case: compatible dimensions
-                # Apply abliteration to the DIRECTIONAL component
-                # Compute dot product of each row with refusal direction
-                projection = torch.matmul(W_direction, refusal_normalized)  # [out_features]
-                
-                # Subtract the projection
-                W_direction_new = W_direction - scale_factor * torch.outer(projection, refusal_normalized)
+            # Handle different tensor structures
+            if W_gpu.dim() == 3:
+                # 3D tensor: GPT-OSS expert parameters [num_experts, out_features, in_features]
+                return modify_3d_expert_tensor(W_gpu, refusal_dir_gpu, scale_factor)
             else:
-                # Handle case where dimensions don't match (e.g., expert parameters)
-                # Use a different strategy: project along the first compatible dimension
-                if W_direction.shape[0] == refusal_normalized.shape[0]:
-                    # Transpose case: ablate along columns instead
-                    projection = torch.matmul(W_direction.T, refusal_normalized)  # [in_features]
-                    W_direction_new = W_direction - scale_factor * torch.outer(refusal_normalized, projection).T
+                # Standard ablation for 2D weights
+                # Normalize refusal direction
+                refusal_normalized = torch.nn.functional.normalize(refusal_dir_gpu, dim=0)
+
+                # Decompose weight matrix
+                # W_gpu is [out_features, in_features]
+                W_norm = torch.norm(W_gpu, dim=1, keepdim=True)  # [out_features, 1]
+                W_direction = torch.nn.functional.normalize(W_gpu, dim=1)  # normalized per output neuron
+                
+                # Check if dimensions are compatible for standard ablation
+                if W_direction.shape[1] == refusal_normalized.shape[0]:
+                    # Standard case: compatible dimensions
+                    # Apply abliteration to the DIRECTIONAL component
+                    # Compute dot product of each row with refusal direction
+                    projection = torch.matmul(W_direction, refusal_normalized)  # [out_features]
+                    
+                    # Subtract the projection
+                    W_direction_new = W_direction - scale_factor * torch.outer(projection, refusal_normalized)
                 else:
-                    # Fallback: skip ablation for incompatible dimensions
-                    print(f"    Warning: Skipping weight with incompatible shape {W.shape} (W_direction: {W_direction.shape}, refusal_dir: {refusal_dir.shape})")
-                    return W.detach().clone()
-        
-            # Re-normalize the adjusted direction
-            W_direction_new = torch.nn.functional.normalize(W_direction_new, dim=1)
-        
-            # Recombine: keep original magnitude, use new direction
-            W_modified = W_norm * W_direction_new
+                    # Handle case where dimensions don't match (e.g., expert parameters)
+                    # Use a different strategy: project along the first compatible dimension
+                    if W_direction.shape[0] == refusal_normalized.shape[0]:
+                        # Transpose case: ablate along columns instead
+                        projection = torch.matmul(W_direction.T, refusal_normalized)  # [in_features]
+                        W_direction_new = W_direction - scale_factor * torch.outer(refusal_normalized, projection).T
+                    else:
+                        # Fallback: skip ablation for incompatible dimensions
+                        print(f"    Warning: Skipping weight with incompatible shape {W.shape} (W_direction: {W_direction.shape}, refusal_dir: {refusal_dir.shape})")
+                        return W.detach().clone()
+                
+                # Re-normalize the adjusted direction
+                W_direction_new = torch.nn.functional.normalize(W_direction_new, dim=1)
+                
+                # Recombine: keep original magnitude, use new direction
+                W_modified = W_norm * W_direction_new
         
         # Convert back to original dtype and CPU
         # Transpose here to return safetensors convention
         if W.dim() == 2:
             result = W_modified.T.to('cpu', dtype=original_dtype, non_blocking=True)
+        elif W.dim() == 3:
+            # For 3D expert tensors, no transpose needed
+            result = W_modified.to('cpu', dtype=original_dtype, non_blocking=True)
         else:
-            # Handle tensors with dimensions other than 2
-            if W_modified.dim() > 2:
+            # Handle tensors with dimensions other than 2 or 3
+            if W_modified.dim() > 3:
                 result = W_modified.mT.to('cpu', dtype=original_dtype, non_blocking=True)
             elif W_modified.dim() == 2 and W.dim() == 1:
                 result = W_modified.squeeze(1).to('cpu', dtype=original_dtype, non_blocking=True)
@@ -155,6 +166,79 @@ def modify_tensor_norm_preserved(
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
 
+    return result.detach().clone()
+
+
+def modify_3d_expert_tensor(
+    W: torch.Tensor, refusal_dir: torch.Tensor, scale_factor: float = 1.0,
+) -> torch.Tensor:
+    """
+    Modify 3D expert tensor by ablating refusal direction for each expert.
+    W shape: [num_experts, out_features, in_features]
+    refusal_dir shape: [hidden_size]
+    
+    For GPT-OSS-20B: W is [32, 2880, 2880], refusal_dir is [2880] (from hidden states)
+    """
+    original_dtype = W.dtype
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    with torch.no_grad():
+        W_gpu = W.to(device, dtype=torch.float32, non_blocking=True)
+        refusal_dir_gpu = refusal_dir.to(device, dtype=torch.float32, non_blocking=True)
+        
+        # Ensure refusal_dir is 1D
+        if refusal_dir_gpu.dim() > 1:
+            refusal_dir_gpu = refusal_dir_gpu.view(-1)
+        
+        num_experts, out_features, in_features = W_gpu.shape
+        
+        # Check if refusal direction matches the inner dimensions
+        if in_features != refusal_dir_gpu.shape[0]:
+            print(f"    Warning: Expert tensor incompatible: W[{num_experts}, {out_features}, {in_features}] vs refusal_dir[{refusal_dir_gpu.shape[0]}]")
+            return W.detach().clone()
+        
+        # Process each expert individually
+        modified_experts = []
+        
+        for expert_idx in range(num_experts):
+            expert_W = W_gpu[expert_idx]  # [out_features, in_features]
+            
+            # Normalize refusal direction
+            refusal_normalized = torch.nn.functional.normalize(refusal_dir_gpu, dim=0)
+            
+            # Decompose expert weight matrix
+            W_norm = torch.norm(expert_W, dim=1, keepdim=True)  # [out_features, 1]
+            W_direction = torch.nn.functional.normalize(expert_W, dim=1)  # normalized per output neuron
+            
+            # Apply abliteration to the DIRECTIONAL component
+            # Compute dot product of each row with refusal direction
+            projection = torch.matmul(W_direction, refusal_normalized)  # [out_features]
+            
+            # Subtract the projection
+            W_direction_new = W_direction - scale_factor * torch.outer(projection, refusal_normalized)
+            
+            # Re-normalize the adjusted direction
+            W_direction_new = torch.nn.functional.normalize(W_direction_new, dim=1)
+            
+            # Recombine: keep original magnitude, use new direction
+            W_modified = W_norm * W_direction_new
+            
+            modified_experts.append(W_modified)
+        
+        # Stack back to 3D tensor
+        W_modified_3d = torch.stack(modified_experts, dim=0)
+        
+        # Convert back to original dtype and CPU
+        result = W_modified_3d.to('cpu', dtype=original_dtype, non_blocking=True)
+        
+        # Cleanup
+        del W_gpu, refusal_dir_gpu, refusal_normalized
+        del modified_experts, W_modified_3d
+        
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+    
     return result.detach().clone()
 
 
