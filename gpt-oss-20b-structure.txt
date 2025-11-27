@@ -1,0 +1,552 @@
+=== GPT-OSS-20B Model Structure Analysis ===
+
+1. Basic structure analysis...
+Analyzing model structure: /home/arli/models/gpt-oss-20b-BF16/
+Model type: gpt_oss
+Architecture: GptOssConfig
+Total parameters: 411
+Found 24 layers
+Other parameters: 3
+
+=== LAYER 0 ANALYSIS ===
+
+  INPUT_LAYERNORM:
+    model.layers.0.input_layernorm.weight: torch.Size([2880])
+
+  MLP:
+    model.layers.0.mlp.experts.down_proj: torch.Size([32, 2880, 2880])
+      Expert Analysis:
+        Type: down_proj
+        Shape: torch.Size([32, 2880, 2880])
+        Out features: N/A
+        In features: N/A
+    model.layers.0.mlp.experts.down_proj_bias: torch.Size([32, 2880])
+      Expert Analysis:
+        Type: down_proj_bias
+        Shape: torch.Size([32, 2880])
+        Out features: 32
+        In features: 2880
+    model.layers.0.mlp.experts.gate_up_proj: torch.Size([32, 2880, 5760])
+      Expert Analysis:
+        Type: gate_up_proj
+        Shape: torch.Size([32, 2880, 5760])
+        Out features: N/A
+        In features: N/A
+    model.layers.0.mlp.experts.gate_up_proj_bias: torch.Size([32, 5760])
+      Expert Analysis:
+        Type: gate_up_proj_bias
+        Shape: torch.Size([32, 5760])
+        Out features: 32
+        In features: 5760
+    model.layers.0.mlp.router.bias: torch.Size([32])
+      Router Analysis:
+        Type: bias
+        Shape: torch.Size([32])
+        This is a bias parameter
+    model.layers.0.mlp.router.weight: torch.Size([32, 2880])
+      Router Analysis:
+        Type: weight
+        Shape: torch.Size([32, 2880])
+        Weight matrix: 32 experts x 2880 hidden_size
+
+  POST_ATTENTION_LAYERNORM:
+    model.layers.0.post_attention_layernorm.weight: torch.Size([2880])
+
+  SELF_ATTN:
+    model.layers.0.self_attn.k_proj.bias: torch.Size([512])
+      Attention Analysis:
+        Type: bias
+        Shape: torch.Size([512])
+    model.layers.0.self_attn.k_proj.weight: torch.Size([512, 2880])
+      Attention Analysis:
+        Type: weight
+        Shape: torch.Size([512, 2880])
+    model.layers.0.self_attn.o_proj.bias: torch.Size([2880])
+      Attention Analysis:
+        Type: bias
+        Shape: torch.Size([2880])
+        Output projection - good ablation target
+    model.layers.0.self_attn.o_proj.weight: torch.Size([2880, 4096])
+      Attention Analysis:
+        Type: weight
+        Shape: torch.Size([2880, 4096])
+        Output projection - good ablation target
+    model.layers.0.self_attn.q_proj.bias: torch.Size([4096])
+      Attention Analysis:
+        Type: bias
+        Shape: torch.Size([4096])
+    model.layers.0.self_attn.q_proj.weight: torch.Size([4096, 2880])
+      Attention Analysis:
+        Type: weight
+        Shape: torch.Size([4096, 2880])
+    model.layers.0.self_attn.sinks: torch.Size([64])
+      Attention Analysis:
+        Type: sinks
+        Shape: torch.Size([64])
+    model.layers.0.self_attn.v_proj.bias: torch.Size([512])
+      Attention Analysis:
+        Type: bias
+        Shape: torch.Size([512])
+    model.layers.0.self_attn.v_proj.weight: torch.Size([512, 2880])
+      Attention Analysis:
+        Type: weight
+        Shape: torch.Size([512, 2880])
+
+=== LAYER 1 ANALYSIS ===
+
+  INPUT_LAYERNORM:
+    model.layers.1.input_layernorm.weight: torch.Size([2880])
+
+  MLP:
+    model.layers.1.mlp.experts.down_proj: torch.Size([32, 2880, 2880])
+      Expert Analysis:
+        Type: down_proj
+        Shape: torch.Size([32, 2880, 2880])
+        Out features: N/A
+        In features: N/A
+    model.layers.1.mlp.experts.down_proj_bias: torch.Size([32, 2880])
+      Expert Analysis:
+        Type: down_proj_bias
+        Shape: torch.Size([32, 2880])
+        Out features: 32
+        In features: 2880
+    model.layers.1.mlp.experts.gate_up_proj: torch.Size([32, 2880, 5760])
+      Expert Analysis:
+        Type: gate_up_proj
+        Shape: torch.Size([32, 2880, 5760])
+        Out features: N/A
+        In features: N/A
+    model.layers.1.mlp.experts.gate_up_proj_bias: torch.Size([32, 5760])
+      Expert Analysis:
+        Type: gate_up_proj_bias
+        Shape: torch.Size([32, 5760])
+        Out features: 32
+        In features: 5760
+    model.layers.1.mlp.router.bias: torch.Size([32])
+      Router Analysis:
+        Type: bias
+        Shape: torch.Size([32])
+        This is a bias parameter
+    model.layers.1.mlp.router.weight: torch.Size([32, 2880])
+      Router Analysis:
+        Type: weight
+        Shape: torch.Size([32, 2880])
+        Weight matrix: 32 experts x 2880 hidden_size
+
+  POST_ATTENTION_LAYERNORM:
+    model.layers.1.post_attention_layernorm.weight: torch.Size([2880])
+
+  SELF_ATTN:
+    model.layers.1.self_attn.k_proj.bias: torch.Size([512])
+      Attention Analysis:
+        Type: bias
+        Shape: torch.Size([512])
+    model.layers.1.self_attn.k_proj.weight: torch.Size([512, 2880])
+      Attention Analysis:
+        Type: weight
+        Shape: torch.Size([512, 2880])
+    model.layers.1.self_attn.o_proj.bias: torch.Size([2880])
+      Attention Analysis:
+        Type: bias
+        Shape: torch.Size([2880])
+        Output projection - good ablation target
+    model.layers.1.self_attn.o_proj.weight: torch.Size([2880, 4096])
+      Attention Analysis:
+        Type: weight
+        Shape: torch.Size([2880, 4096])
+        Output projection - good ablation target
+    model.layers.1.self_attn.q_proj.bias: torch.Size([4096])
+      Attention Analysis:
+        Type: bias
+        Shape: torch.Size([4096])
+    model.layers.1.self_attn.q_proj.weight: torch.Size([4096, 2880])
+      Attention Analysis:
+        Type: weight
+        Shape: torch.Size([4096, 2880])
+    model.layers.1.self_attn.sinks: torch.Size([64])
+      Attention Analysis:
+        Type: sinks
+        Shape: torch.Size([64])
+    model.layers.1.self_attn.v_proj.bias: torch.Size([512])
+      Attention Analysis:
+        Type: bias
+        Shape: torch.Size([512])
+    model.layers.1.self_attn.v_proj.weight: torch.Size([512, 2880])
+      Attention Analysis:
+        Type: weight
+        Shape: torch.Size([512, 2880])
+
+=== LAYER 10 ANALYSIS ===
+
+  INPUT_LAYERNORM:
+    model.layers.10.input_layernorm.weight: torch.Size([2880])
+
+  MLP:
+    model.layers.10.mlp.experts.down_proj: torch.Size([32, 2880, 2880])
+      Expert Analysis:
+        Type: down_proj
+        Shape: torch.Size([32, 2880, 2880])
+        Out features: N/A
+        In features: N/A
+    model.layers.10.mlp.experts.down_proj_bias: torch.Size([32, 2880])
+      Expert Analysis:
+        Type: down_proj_bias
+        Shape: torch.Size([32, 2880])
+        Out features: 32
+        In features: 2880
+    model.layers.10.mlp.experts.gate_up_proj: torch.Size([32, 2880, 5760])
+      Expert Analysis:
+        Type: gate_up_proj
+        Shape: torch.Size([32, 2880, 5760])
+        Out features: N/A
+        In features: N/A
+    model.layers.10.mlp.experts.gate_up_proj_bias: torch.Size([32, 5760])
+      Expert Analysis:
+        Type: gate_up_proj_bias
+        Shape: torch.Size([32, 5760])
+        Out features: 32
+        In features: 5760
+    model.layers.10.mlp.router.bias: torch.Size([32])
+      Router Analysis:
+        Type: bias
+        Shape: torch.Size([32])
+        This is a bias parameter
+    model.layers.10.mlp.router.weight: torch.Size([32, 2880])
+      Router Analysis:
+        Type: weight
+        Shape: torch.Size([32, 2880])
+        Weight matrix: 32 experts x 2880 hidden_size
+
+  POST_ATTENTION_LAYERNORM:
+    model.layers.10.post_attention_layernorm.weight: torch.Size([2880])
+
+  SELF_ATTN:
+    model.layers.10.self_attn.k_proj.bias: torch.Size([512])
+      Attention Analysis:
+        Type: bias
+        Shape: torch.Size([512])
+    model.layers.10.self_attn.k_proj.weight: torch.Size([512, 2880])
+      Attention Analysis:
+        Type: weight
+        Shape: torch.Size([512, 2880])
+    model.layers.10.self_attn.o_proj.bias: torch.Size([2880])
+      Attention Analysis:
+        Type: bias
+        Shape: torch.Size([2880])
+        Output projection - good ablation target
+    model.layers.10.self_attn.o_proj.weight: torch.Size([2880, 4096])
+      Attention Analysis:
+        Type: weight
+        Shape: torch.Size([2880, 4096])
+        Output projection - good ablation target
+    model.layers.10.self_attn.q_proj.bias: torch.Size([4096])
+      Attention Analysis:
+        Type: bias
+        Shape: torch.Size([4096])
+    model.layers.10.self_attn.q_proj.weight: torch.Size([4096, 2880])
+      Attention Analysis:
+        Type: weight
+        Shape: torch.Size([4096, 2880])
+    model.layers.10.self_attn.sinks: torch.Size([64])
+      Attention Analysis:
+        Type: sinks
+        Shape: torch.Size([64])
+    model.layers.10.self_attn.v_proj.bias: torch.Size([512])
+      Attention Analysis:
+        Type: bias
+        Shape: torch.Size([512])
+    model.layers.10.self_attn.v_proj.weight: torch.Size([512, 2880])
+      Attention Analysis:
+        Type: weight
+        Shape: torch.Size([512, 2880])
+
+=== OTHER PARAMETERS ===
+  lm_head.weight
+  model.embed_tokens.weight
+  model.norm.weight
+
+=== STRUCTURE SUMMARY ===
+Model type: gpt_oss
+Total layers: 24
+MoE Structure: Yes
+Router Parameters: Yes
+
+=== ABLATION COMPATIBILITY ANALYSIS (Layer 0) ===
+Key ablation targets found:
+  Attention output: Yes (model.layers.0.self_attn.o_proj.weight)
+  Expert down proj: Yes (model.layers.0.mlp.experts.down_proj_bias)
+  Router weights: Yes (model.layers.0.mlp.router.weight)
+
+  model.layers.0.self_attn.o_proj.weight:
+    Shape: torch.Size([2880, 4096])
+    Dimensions: 2
+    Matrix: 2880 x 4096
+    Transposed: 4096 x 2880
+    Compatible hidden size: 4096
+    Standard weight matrix - compatible with current ablation
+
+  model.layers.0.mlp.experts.down_proj_bias:
+    Shape: torch.Size([32, 2880])
+    Dimensions: 2
+    Matrix: 32 x 2880
+    Transposed: 2880 x 32
+    Unusual hidden size: 2880
+    Standard weight matrix - compatible with current ablation
+
+  model.layers.0.mlp.router.weight:
+    Shape: torch.Size([32, 2880])
+    Dimensions: 2
+    Matrix: 32 x 2880
+    Transposed: 2880 x 32
+    Unusual hidden size: 2880
+    Standard weight matrix - compatible with current ablation
+
+2. Layer 11 detailed analysis (where error occurred)...
+Analyzing model structure: /home/arli/models/gpt-oss-20b-BF16/
+Model type: gpt_oss
+Architecture: GptOssConfig
+Total parameters: 411
+Found 24 layers
+Other parameters: 3
+
+=== LAYER 11 ANALYSIS ===
+  Parameters span multiple shards: {'model-00004-of-00009.safetensors', 'model-00005-of-00009.safetensors'}
+
+  INPUT_LAYERNORM:
+    model.layers.11.input_layernorm.weight: NOT FOUND IN SHARD
+
+  MLP:
+    model.layers.11.mlp.experts.down_proj: NOT FOUND IN SHARD
+    model.layers.11.mlp.experts.down_proj_bias: NOT FOUND IN SHARD
+    model.layers.11.mlp.experts.gate_up_proj: NOT FOUND IN SHARD
+    model.layers.11.mlp.experts.gate_up_proj_bias: NOT FOUND IN SHARD
+    model.layers.11.mlp.router.bias: torch.Size([32])
+      Router Analysis:
+        Type: bias
+        Shape: torch.Size([32])
+        This is a bias parameter
+    model.layers.11.mlp.router.weight: torch.Size([32, 2880])
+      Router Analysis:
+        Type: weight
+        Shape: torch.Size([32, 2880])
+        Weight matrix: 32 experts x 2880 hidden_size
+
+  POST_ATTENTION_LAYERNORM:
+    model.layers.11.post_attention_layernorm.weight: NOT FOUND IN SHARD
+
+  SELF_ATTN:
+    model.layers.11.self_attn.k_proj.bias: torch.Size([512])
+      Attention Analysis:
+        Type: bias
+        Shape: torch.Size([512])
+    model.layers.11.self_attn.k_proj.weight: torch.Size([512, 2880])
+      Attention Analysis:
+        Type: weight
+        Shape: torch.Size([512, 2880])
+    model.layers.11.self_attn.o_proj.bias: torch.Size([2880])
+      Attention Analysis:
+        Type: bias
+        Shape: torch.Size([2880])
+        Output projection - good ablation target
+    model.layers.11.self_attn.o_proj.weight: torch.Size([2880, 4096])
+      Attention Analysis:
+        Type: weight
+        Shape: torch.Size([2880, 4096])
+        Output projection - good ablation target
+    model.layers.11.self_attn.q_proj.bias: torch.Size([4096])
+      Attention Analysis:
+        Type: bias
+        Shape: torch.Size([4096])
+    model.layers.11.self_attn.q_proj.weight: torch.Size([4096, 2880])
+      Attention Analysis:
+        Type: weight
+        Shape: torch.Size([4096, 2880])
+    model.layers.11.self_attn.sinks: torch.Size([64])
+      Attention Analysis:
+        Type: sinks
+        Shape: torch.Size([64])
+    model.layers.11.self_attn.v_proj.bias: torch.Size([512])
+      Attention Analysis:
+        Type: bias
+        Shape: torch.Size([512])
+    model.layers.11.self_attn.v_proj.weight: torch.Size([512, 2880])
+      Attention Analysis:
+        Type: weight
+        Shape: torch.Size([512, 2880])
+
+=== OTHER PARAMETERS ===
+  lm_head.weight
+  model.embed_tokens.weight
+  model.norm.weight
+
+=== STRUCTURE SUMMARY ===
+Model type: gpt_oss
+Total layers: 24
+MoE Structure: Yes
+Router Parameters: Yes
+
+=== ABLATION COMPATIBILITY ANALYSIS (Layer 0) ===
+Key ablation targets found:
+  Attention output: Yes (model.layers.0.self_attn.o_proj.weight)
+  Expert down proj: Yes (model.layers.0.mlp.experts.down_proj_bias)
+  Router weights: Yes (model.layers.0.mlp.router.weight)
+
+  model.layers.0.self_attn.o_proj.weight:
+    Shape: torch.Size([2880, 4096])
+    Dimensions: 2
+    Matrix: 2880 x 4096
+    Transposed: 4096 x 2880
+    Compatible hidden size: 4096
+    Standard weight matrix - compatible with current ablation
+
+  model.layers.0.mlp.experts.down_proj_bias:
+    Shape: torch.Size([32, 2880])
+    Dimensions: 2
+    Matrix: 32 x 2880
+    Transposed: 2880 x 32
+    Unusual hidden size: 2880
+    Standard weight matrix - compatible with current ablation
+
+  model.layers.0.mlp.router.weight:
+    Shape: torch.Size([32, 2880])
+    Dimensions: 2
+    Matrix: 32 x 2880
+    Transposed: 2880 x 32
+    Unusual hidden size: 2880
+    Standard weight matrix - compatible with current ablation
+
+3. Layer 15 analysis (best measurement layer)...
+Analyzing model structure: /home/arli/models/gpt-oss-20b-BF16/
+Model type: gpt_oss
+Architecture: GptOssConfig
+Total parameters: 411
+Found 24 layers
+Other parameters: 3
+
+=== LAYER 15 ANALYSIS ===
+
+  INPUT_LAYERNORM:
+    model.layers.15.input_layernorm.weight: torch.Size([2880])
+
+  MLP:
+    model.layers.15.mlp.experts.down_proj: torch.Size([32, 2880, 2880])
+      Expert Analysis:
+        Type: down_proj
+        Shape: torch.Size([32, 2880, 2880])
+        Out features: N/A
+        In features: N/A
+    model.layers.15.mlp.experts.down_proj_bias: torch.Size([32, 2880])
+      Expert Analysis:
+        Type: down_proj_bias
+        Shape: torch.Size([32, 2880])
+        Out features: 32
+        In features: 2880
+    model.layers.15.mlp.experts.gate_up_proj: torch.Size([32, 2880, 5760])
+      Expert Analysis:
+        Type: gate_up_proj
+        Shape: torch.Size([32, 2880, 5760])
+        Out features: N/A
+        In features: N/A
+    model.layers.15.mlp.experts.gate_up_proj_bias: torch.Size([32, 5760])
+      Expert Analysis:
+        Type: gate_up_proj_bias
+        Shape: torch.Size([32, 5760])
+        Out features: 32
+        In features: 5760
+    model.layers.15.mlp.router.bias: torch.Size([32])
+      Router Analysis:
+        Type: bias
+        Shape: torch.Size([32])
+        This is a bias parameter
+    model.layers.15.mlp.router.weight: torch.Size([32, 2880])
+      Router Analysis:
+        Type: weight
+        Shape: torch.Size([32, 2880])
+        Weight matrix: 32 experts x 2880 hidden_size
+
+  POST_ATTENTION_LAYERNORM:
+    model.layers.15.post_attention_layernorm.weight: torch.Size([2880])
+
+  SELF_ATTN:
+    model.layers.15.self_attn.k_proj.bias: torch.Size([512])
+      Attention Analysis:
+        Type: bias
+        Shape: torch.Size([512])
+    model.layers.15.self_attn.k_proj.weight: torch.Size([512, 2880])
+      Attention Analysis:
+        Type: weight
+        Shape: torch.Size([512, 2880])
+    model.layers.15.self_attn.o_proj.bias: torch.Size([2880])
+      Attention Analysis:
+        Type: bias
+        Shape: torch.Size([2880])
+        Output projection - good ablation target
+    model.layers.15.self_attn.o_proj.weight: torch.Size([2880, 4096])
+      Attention Analysis:
+        Type: weight
+        Shape: torch.Size([2880, 4096])
+        Output projection - good ablation target
+    model.layers.15.self_attn.q_proj.bias: torch.Size([4096])
+      Attention Analysis:
+        Type: bias
+        Shape: torch.Size([4096])
+    model.layers.15.self_attn.q_proj.weight: torch.Size([4096, 2880])
+      Attention Analysis:
+        Type: weight
+        Shape: torch.Size([4096, 2880])
+    model.layers.15.self_attn.sinks: torch.Size([64])
+      Attention Analysis:
+        Type: sinks
+        Shape: torch.Size([64])
+    model.layers.15.self_attn.v_proj.bias: torch.Size([512])
+      Attention Analysis:
+        Type: bias
+        Shape: torch.Size([512])
+    model.layers.15.self_attn.v_proj.weight: torch.Size([512, 2880])
+      Attention Analysis:
+        Type: weight
+        Shape: torch.Size([512, 2880])
+
+=== OTHER PARAMETERS ===
+  lm_head.weight
+  model.embed_tokens.weight
+  model.norm.weight
+
+=== STRUCTURE SUMMARY ===
+Model type: gpt_oss
+Total layers: 24
+MoE Structure: Yes
+Router Parameters: Yes
+
+=== ABLATION COMPATIBILITY ANALYSIS (Layer 0) ===
+Key ablation targets found:
+  Attention output: Yes (model.layers.0.self_attn.o_proj.weight)
+  Expert down proj: Yes (model.layers.0.mlp.experts.down_proj_bias)
+  Router weights: Yes (model.layers.0.mlp.router.weight)
+
+  model.layers.0.self_attn.o_proj.weight:
+    Shape: torch.Size([2880, 4096])
+    Dimensions: 2
+    Matrix: 2880 x 4096
+    Transposed: 4096 x 2880
+    Compatible hidden size: 4096
+    Standard weight matrix - compatible with current ablation
+
+  model.layers.0.mlp.experts.down_proj_bias:
+    Shape: torch.Size([32, 2880])
+    Dimensions: 2
+    Matrix: 32 x 2880
+    Transposed: 2880 x 32
+    Unusual hidden size: 2880
+    Standard weight matrix - compatible with current ablation
+
+  model.layers.0.mlp.router.weight:
+    Shape: torch.Size([32, 2880])
+    Dimensions: 2
+    Matrix: 32 x 2880
+    Transposed: 2880 x 32
+    Unusual hidden size: 2880
+    Standard weight matrix - compatible with current ablation
+
+=== Analysis Complete ===
+Review the output above to understand parameter structures and fix ablation logic.

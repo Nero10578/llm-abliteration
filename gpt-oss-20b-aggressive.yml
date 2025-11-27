@@ -1,0 +1,50 @@
+# Aggressive ablation configuration for GPT-OSS-20B
+# Based on GLM-4.5-Air success pattern with higher scales
+# Using Heretic's simple 3D tensor approach
+
+model: gpt-oss-20b-BF16/
+measurements: gpt-oss-20b.measure
+output: gpt-oss-20b-aggressive
+ablate:
+# Core peak layers with maximum ablation (like GLM)
+- layer: 13
+  measurement: 15
+  scale: 2.5
+  sparsity: 0.0
+- layer: 14
+  measurement: 15
+  scale: 2.5
+  sparsity: 0.0
+- layer: 15
+  measurement: 15
+  scale: 2.5
+  sparsity: 0.0
+- layer: 16
+  measurement: 15
+  scale: 2.5
+  sparsity: 0.0
+- layer: 17
+  measurement: 15
+  scale: 2.5
+  sparsity: 0.0
+# Extended range for comprehensive coverage
+- layer: 11
+  measurement: 15
+  scale: 2.0
+  sparsity: 0.0
+- layer: 12
+  measurement: 15
+  scale: 2.0
+  sparsity: 0.0
+- layer: 18
+  measurement: 15
+  scale: 2.0
+  sparsity: 0.0
+- layer: 19
+  measurement: 15
+  scale: 2.0
+  sparsity: 0.0
+- layer: 20
+  measurement: 15
+  scale: 2.0
+  sparsity: 0.0
