@@ -1,0 +1,68 @@
+# Optimized ablation configuration for GPT-OSS-20B
+# Generated from: gpt-oss-20b.measure
+# Model type: MoE
+# Best measurement layer: 15 (quality: 0.0025)
+# Selected 12 layers for ablation (focused on high-quality peaks)
+# Layer range: 11-20 (targeted selection)
+#
+# Optimization strategy:
+#   - Core peak layers (15-17): scale=1.0 (highest quality)
+#   - Secondary peak (13-14, 18-20): scale=0.8 (good quality)
+#   - Early peak approach (11-12): scale=0.6 (moderate quality)
+#   - Focused on actual signal quality peaks rather than broad coverage
+#
+# Top 5 layers by signal quality:
+#   1. Layer 15: quality=0.0025, snr=0.1718, cosine=0.9852
+#   2. Layer 14: quality=0.0023, snr=0.1656, cosine=0.9863
+#   3. Layer 17: quality=0.0022, snr=0.1628, cosine=0.9867
+#   4. Layer 16: quality=0.0020, snr=0.1579, cosine=0.9875
+#   5. Layer 13: quality=0.0017, snr=0.1504, cosine=0.9886
+
+model: gpt-oss-20b-BF16/
+measurements: gpt-oss-20b.measure
+output: gpt-oss-20b-optimal
+ablate:
+# Early approach to peak with moderate signal quality
+- layer: 11
+  measurement: 15
+  scale: 0.6
+  sparsity: 0.0
+- layer: 12
+  measurement: 15
+  scale: 0.6
+  sparsity: 0.0
+# Secondary peak leading into main peak
+- layer: 13
+  measurement: 15
+  scale: 0.8
+  sparsity: 0.0
+- layer: 14
+  measurement: 15
+  scale: 0.8
+  sparsity: 0.0
+# Core peak - highest signal quality layers
+- layer: 15
+  measurement: 15
+  scale: 1.0
+  sparsity: 0.0
+- layer: 16
+  measurement: 15
+  scale: 1.0
+  sparsity: 0.0
+- layer: 17
+  measurement: 15
+  scale: 1.0
+  sparsity: 0.0
+# Secondary peak trailing main peak
+- layer: 18
+  measurement: 15
+  scale: 0.8
+  sparsity: 0.0
+- layer: 19
+  measurement: 15
+  scale: 0.8
+  sparsity: 0.0
+- layer: 20
+  measurement: 15
+  scale: 0.8
+  sparsity: 0.0

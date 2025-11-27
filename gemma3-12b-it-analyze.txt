@@ -1,0 +1,338 @@
+Loading refusal information from gemma12b.measure...
+Total layers: 48
+=== Refusal Direction Analysis (Layer 0) ===
+Cosine similarity:       1.0000
+Harmful mean norm:       59.5099
+Harmless mean norm:      59.5099
+Refusal direction norm:  0.0000
+Signal-to-noise ratio:   0.0000
+Est. Signal quality:     -0.0000
+=== Refusal Direction Analysis (Layer 1) ===
+Cosine similarity:       0.9999
+Harmful mean norm:       1401.5852
+Harmless mean norm:      1428.7059
+Refusal direction norm:  32.0265
+Signal-to-noise ratio:   0.0224
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 2) ===
+Cosine similarity:       0.9998
+Harmful mean norm:       1314.8826
+Harmless mean norm:      1357.9990
+Refusal direction norm:  49.0406
+Signal-to-noise ratio:   0.0361
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 3) ===
+Cosine similarity:       0.9998
+Harmful mean norm:       1150.2292
+Harmless mean norm:      1176.5424
+Refusal direction norm:  36.6776
+Signal-to-noise ratio:   0.0312
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 4) ===
+Cosine similarity:       0.9997
+Harmful mean norm:       1055.2074
+Harmless mean norm:      1070.0403
+Refusal direction norm:  30.9327
+Signal-to-noise ratio:   0.0289
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 5) ===
+Cosine similarity:       0.9998
+Harmful mean norm:       1511.3955
+Harmless mean norm:      1544.8508
+Refusal direction norm:  46.5633
+Signal-to-noise ratio:   0.0301
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 6) ===
+Cosine similarity:       0.9994
+Harmful mean norm:       1310.6355
+Harmless mean norm:      1310.9784
+Refusal direction norm:  43.7484
+Signal-to-noise ratio:   0.0334
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 7) ===
+Cosine similarity:       0.9991
+Harmful mean norm:       1229.9023
+Harmless mean norm:      1249.8982
+Refusal direction norm:  57.2540
+Signal-to-noise ratio:   0.0458
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 8) ===
+Cosine similarity:       0.9996
+Harmful mean norm:       2291.9893
+Harmless mean norm:      2305.6387
+Refusal direction norm:  64.0553
+Signal-to-noise ratio:   0.0278
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 9) ===
+Cosine similarity:       0.9998
+Harmful mean norm:       4004.6394
+Harmless mean norm:      4022.2246
+Refusal direction norm:  73.3349
+Signal-to-noise ratio:   0.0182
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 10) ===
+Cosine similarity:       0.9998
+Harmful mean norm:       3819.5779
+Harmless mean norm:      3814.9736
+Refusal direction norm:  82.7452
+Signal-to-noise ratio:   0.0217
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 11) ===
+Cosine similarity:       0.9997
+Harmful mean norm:       5709.9712
+Harmless mean norm:      5671.9985
+Refusal direction norm:  138.1749
+Signal-to-noise ratio:   0.0242
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 12) ===
+Cosine similarity:       0.9998
+Harmful mean norm:       7767.2236
+Harmless mean norm:      7564.4482
+Refusal direction norm:  258.8517
+Signal-to-noise ratio:   0.0333
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 13) ===
+Cosine similarity:       0.9997
+Harmful mean norm:       9907.0645
+Harmless mean norm:      9169.6260
+Refusal direction norm:  775.6342
+Signal-to-noise ratio:   0.0783
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 14) ===
+Cosine similarity:       0.9997
+Harmful mean norm:       14721.8291
+Harmless mean norm:      13678.5234
+Refusal direction norm:  1099.2765
+Signal-to-noise ratio:   0.0747
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 15) ===
+Cosine similarity:       0.9998
+Harmful mean norm:       19928.3477
+Harmless mean norm:      18350.2598
+Refusal direction norm:  1628.1989
+Signal-to-noise ratio:   0.0817
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 16) ===
+Cosine similarity:       0.9998
+Harmful mean norm:       28398.5684
+Harmless mean norm:      25769.2949
+Refusal direction norm:  2685.4084
+Signal-to-noise ratio:   0.0946
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 17) ===
+Cosine similarity:       0.9996
+Harmful mean norm:       29275.2168
+Harmless mean norm:      25271.3320
+Refusal direction norm:  4072.1140
+Signal-to-noise ratio:   0.1391
+Est. Signal quality:     0.0001
+=== Refusal Direction Analysis (Layer 18) ===
+Cosine similarity:       0.9996
+Harmful mean norm:       37844.4023
+Harmless mean norm:      33125.3516
+Refusal direction norm:  4819.5981
+Signal-to-noise ratio:   0.1274
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 19) ===
+Cosine similarity:       0.9996
+Harmful mean norm:       44470.4023
+Harmless mean norm:      40116.4258
+Refusal direction norm:  4510.2725
+Signal-to-noise ratio:   0.1014
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 20) ===
+Cosine similarity:       0.9995
+Harmful mean norm:       47048.3203
+Harmless mean norm:      43108.8438
+Refusal direction norm:  4188.6157
+Signal-to-noise ratio:   0.0890
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 21) ===
+Cosine similarity:       0.9994
+Harmful mean norm:       56168.7422
+Harmless mean norm:      51687.4453
+Refusal direction norm:  4829.9121
+Signal-to-noise ratio:   0.0860
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 22) ===
+Cosine similarity:       0.9993
+Harmful mean norm:       58880.6484
+Harmless mean norm:      56213.7188
+Refusal direction norm:  3420.3022
+Signal-to-noise ratio:   0.0581
+Est. Signal quality:     0.0000
+=== Refusal Direction Analysis (Layer 23) ===
+Cosine similarity:       0.9990
+Harmful mean norm:       61297.0625
+Harmless mean norm:      58781.8086
+Refusal direction norm:  3678.5254
+Signal-to-noise ratio:   0.0600
+Est. Signal quality:     0.0001
+=== Refusal Direction Analysis (Layer 24) ===
+Cosine similarity:       0.9989
+Harmful mean norm:       73018.9844
+Harmless mean norm:      72182.0234
+Refusal direction norm:  3502.0779
+Signal-to-noise ratio:   0.0480
+Est. Signal quality:     0.0001
+=== Refusal Direction Analysis (Layer 25) ===
+Cosine similarity:       0.9988
+Harmful mean norm:       80530.5547
+Harmless mean norm:      77770.8750
+Refusal direction norm:  4748.3447
+Signal-to-noise ratio:   0.0590
+Est. Signal quality:     0.0001
+=== Refusal Direction Analysis (Layer 26) ===
+Cosine similarity:       0.9984
+Harmful mean norm:       87049.2891
+Harmless mean norm:      80273.8750
+Refusal direction norm:  8244.8916
+Signal-to-noise ratio:   0.0947
+Est. Signal quality:     0.0001
+=== Refusal Direction Analysis (Layer 27) ===
+Cosine similarity:       0.9976
+Harmful mean norm:       91662.7500
+Harmless mean norm:      84675.9141
+Refusal direction norm:  9279.0879
+Signal-to-noise ratio:   0.1012
+Est. Signal quality:     0.0002
+=== Refusal Direction Analysis (Layer 28) ===
+Cosine similarity:       0.9962
+Harmful mean norm:       86939.3516
+Harmless mean norm:      80010.8750
+Refusal direction norm:  10022.0801
+Signal-to-noise ratio:   0.1153
+Est. Signal quality:     0.0004
+=== Refusal Direction Analysis (Layer 29) ===
+Cosine similarity:       0.9945
+Harmful mean norm:       85425.8281
+Harmless mean norm:      78608.8594
+Refusal direction norm:  10958.0479
+Signal-to-noise ratio:   0.1283
+Est. Signal quality:     0.0007
+=== Refusal Direction Analysis (Layer 30) ===
+Cosine similarity:       0.9937
+Harmful mean norm:       86508.8359
+Harmless mean norm:      78737.3828
+Refusal direction norm:  12099.2930
+Signal-to-noise ratio:   0.1399
+Est. Signal quality:     0.0009
+=== Refusal Direction Analysis (Layer 31) ===
+Cosine similarity:       0.9921
+Harmful mean norm:       83922.3906
+Harmless mean norm:      80310.7656
+Refusal direction norm:  10948.1885
+Signal-to-noise ratio:   0.1305
+Est. Signal quality:     0.0010
+=== Refusal Direction Analysis (Layer 32) ===
+Cosine similarity:       0.9897
+Harmful mean norm:       84472.7969
+Harmless mean norm:      78763.9922
+Refusal direction norm:  13040.8428
+Signal-to-noise ratio:   0.1544
+Est. Signal quality:     0.0016
+=== Refusal Direction Analysis (Layer 33) ===
+Cosine similarity:       0.9883
+Harmful mean norm:       84225.2891
+Harmless mean norm:      79046.8125
+Refusal direction norm:  13527.7295
+Signal-to-noise ratio:   0.1606
+Est. Signal quality:     0.0019
+=== Refusal Direction Analysis (Layer 34) ===
+Cosine similarity:       0.9852
+Harmful mean norm:       85840.8672
+Harmless mean norm:      80855.1562
+Refusal direction norm:  15189.6172
+Signal-to-noise ratio:   0.1770
+Est. Signal quality:     0.0026
+=== Refusal Direction Analysis (Layer 35) ===
+Cosine similarity:       0.9824
+Harmful mean norm:       85410.6250
+Harmless mean norm:      82045.2500
+Refusal direction norm:  16065.4473
+Signal-to-noise ratio:   0.1881
+Est. Signal quality:     0.0033
+=== Refusal Direction Analysis (Layer 36) ===
+Cosine similarity:       0.9812
+Harmful mean norm:       86703.3359
+Harmless mean norm:      82650.8438
+Refusal direction norm:  16907.4453
+Signal-to-noise ratio:   0.1950
+Est. Signal quality:     0.0037
+=== Refusal Direction Analysis (Layer 37) ===
+Cosine similarity:       0.9794
+Harmful mean norm:       88293.9141
+Harmless mean norm:      84423.0625
+Refusal direction norm:  17966.0410
+Signal-to-noise ratio:   0.2035
+Est. Signal quality:     0.0042
+=== Refusal Direction Analysis (Layer 38) ===
+Cosine similarity:       0.9785
+Harmful mean norm:       91522.3281
+Harmless mean norm:      88047.9453
+Refusal direction norm:  18915.5898
+Signal-to-noise ratio:   0.2067
+Est. Signal quality:     0.0044
+=== Refusal Direction Analysis (Layer 39) ===
+Cosine similarity:       0.9781
+Harmful mean norm:       95813.9219
+Harmless mean norm:      93030.8750
+Refusal direction norm:  19959.1094
+Signal-to-noise ratio:   0.2083
+Est. Signal quality:     0.0046
+=== Refusal Direction Analysis (Layer 40) ===
+Cosine similarity:       0.9764
+Harmful mean norm:       101482.8203
+Harmless mean norm:      99323.9844
+Refusal direction norm:  21910.1055
+Signal-to-noise ratio:   0.2159
+Est. Signal quality:     0.0051
+=== Refusal Direction Analysis (Layer 41) ===
+Cosine similarity:       0.9723
+Harmful mean norm:       100139.7266
+Harmless mean norm:      105435.3203
+Refusal direction norm:  24772.0000
+Signal-to-noise ratio:   0.2349
+Est. Signal quality:     0.0065
+=== Refusal Direction Analysis (Layer 42) ===
+Cosine similarity:       0.9695
+Harmful mean norm:       100180.8359
+Harmless mean norm:      107930.8281
+Refusal direction norm:  26833.5703
+Signal-to-noise ratio:   0.2486
+Est. Signal quality:     0.0076
+=== Refusal Direction Analysis (Layer 43) ===
+Cosine similarity:       0.9614
+Harmful mean norm:       100955.5859
+Harmless mean norm:      111678.9922
+Refusal direction norm:  31379.2109
+Signal-to-noise ratio:   0.2810
+Est. Signal quality:     0.0108
+=== Refusal Direction Analysis (Layer 44) ===
+Cosine similarity:       0.9617
+Harmful mean norm:       106787.9453
+Harmless mean norm:      119752.5391
+Refusal direction norm:  33870.0664
+Signal-to-noise ratio:   0.2828
+Est. Signal quality:     0.0108
+=== Refusal Direction Analysis (Layer 45) ===
+Cosine similarity:       0.9593
+Harmful mean norm:       118485.3438
+Harmless mean norm:      132066.9375
+Refusal direction norm:  38170.1406
+Signal-to-noise ratio:   0.2890
+Est. Signal quality:     0.0118
+=== Refusal Direction Analysis (Layer 46) ===
+Cosine similarity:       0.9565
+Harmful mean norm:       127482.5156
+Harmless mean norm:      142805.4062
+Refusal direction norm:  42657.1719
+Signal-to-noise ratio:   0.2987
+Est. Signal quality:     0.0130
+=== Refusal Direction Analysis (Layer 47) ===
+Cosine similarity:       0.9549
+Harmful mean norm:       125353.6641
+Harmless mean norm:      153644.1094
+Refusal direction norm:  50356.6133
+Signal-to-noise ratio:   0.3277
+Est. Signal quality:     0.0148
