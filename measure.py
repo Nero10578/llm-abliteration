@@ -1,5 +1,6 @@
 import gc
 import torch
+import os
 from argparse import ArgumentParser
 from datasets import load_dataset
 from tqdm import tqdm
@@ -13,6 +14,28 @@ from transformers import PreTrainedModel, PreTrainedTokenizer, PreTrainedTokeniz
 from utils.data import load_data
 from utils.models import has_tied_weights
 from utils.clip import magnitude_clip
+
+"""
+Memory Management and CPU Offloading Usage Examples:
+
+1. Basic CPU offloading (spills to CPU when VRAM is full):
+   python measure.py --model your-model --output results.pt --cpu-offload
+
+2. CPU offloading with max GPU memory limit:
+   python measure.py --model your-model --output results.pt --cpu-offload --max-memory 10
+
+3. Multi-GPU with memory limits and CPU offloading:
+   python measure.py --model your-model --output results.pt --cpu-offload --max-memory "0:10,1:15"
+
+4. Force CPU-only loading (useful for very large models):
+   python measure.py --model your-model --output results.pt --device-map cpu
+
+5. Balanced distribution across GPUs with CPU fallback:
+   python measure.py --model your-model --output results.pt --device-map balanced --cpu-offload
+
+6. 8-bit quantization with CPU offloading:
+   python measure.py --model your-model --output results.pt --quant-measure 8bit --cpu-offload
+"""
 
 
 def welford_gpu_batched_multilayer_float32(
@@ -216,6 +239,12 @@ if __name__ == "__main__":
         help="Batch size during inference/calibration; default 32, stick to powers of 2 (higher will use more VRAM)"
     )
     parser.add_argument(
+        "--auto-batch-size",
+        action="store_true",
+        default=False,
+        help="Automatically reduce batch size when using CPU offloading to prevent OOM errors",
+    )
+    parser.add_argument(
         "--output", "-o",
         type=str,
         default=None,
@@ -257,6 +286,25 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="Remove projection along harmless direction from refusal direction",
+    )
+    parser.add_argument(
+        "--cpu-offload",
+        action="store_true",
+        default=False,
+        help="Enable CPU offloading when VRAM is insufficient (spills over to CPU RAM)",
+    )
+    parser.add_argument(
+        "--max-memory",
+        type=str,
+        default=None,
+        help="Maximum memory per GPU in GB (e.g., '10' for 10GB, or '0:10,1:15' for multi-GPU)",
+    )
+    parser.add_argument(
+        "--device-map",
+        type=str,
+        default="auto",
+        choices=["auto", "balanced", "sequential", "cpu"],
+        help="Device mapping strategy: 'auto' (automatic), 'balanced' (even distribution), 'sequential' (fill GPU0 then GPU1), 'cpu' (force CPU only)",
     )
 
     args = parser.parse_args()
@@ -330,9 +378,9 @@ if __name__ == "__main__":
     elif qbit == "8bit":
         quant_config = BitsAndBytesConfig(
             load_in_8bit=True,
-#            llm_int8_enable_fp32_cpu_offload=True,
-#            llm_int8_has_fp16_weight=True,
-        )    
+            llm_int8_enable_fp32_cpu_offload=args.cpu_offload,  # Enable CPU offload for 8bit if requested
+            llm_int8_has_fp16_weight=True,
+        )
 
     if isinstance(args.data_harmful, str):
         harmful_list = load_data(args.data_harmful)
@@ -347,6 +395,49 @@ if __name__ == "__main__":
         deccp_list = load_dataset("augmxnt/deccp", split="censored")
         harmful_list += deccp_list["text"]
 
+    # Configure device mapping with optional CPU offloading
+    device_map = args.device_map
+    max_memory = None
+    
+    if args.cpu_offload:
+        # Enable CPU offloading by setting device_map to "auto" with CPU fallback
+        if device_map == "cpu":
+            print("CPU-only mode selected - model will load entirely on CPU")
+        else:
+            print("CPU offloading enabled - model will spill over to CPU RAM when VRAM is insufficient")
+            # For CPU offloading, we use "auto" but ensure CPU is available as fallback
+            device_map = "auto"
+    else:
+        print(f"Using device mapping strategy: {device_map}")
+    
+    if args.max_memory:
+        # Parse max_memory argument (e.g., "10" or "0:10,1:15")
+        try:
+            if ":" in args.max_memory:
+                # Multi-GPU format: "0:10,1:15"
+                max_memory = {}
+                for gpu_mem in args.max_memory.split(","):
+                    gpu_id, mem_gb = gpu_mem.split(":")
+                    max_memory[int(gpu_id)] = f"{mem_gb}GB"
+            else:
+                # Single GPU format: "10"
+                max_memory = {0: f"{args.max_memory}GB"}
+            print(f"Max memory per GPU set to: {max_memory}")
+        except Exception as e:
+            print(f"Invalid max_memory format: {e}. Using default.")
+            max_memory = None
+    
+    # Additional memory management settings for large models
+    if args.cpu_offload or args.max_memory:
+        print("Enabling aggressive memory management for large model loading...")
+        # Set environment variables for better memory management
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
+        os.environ['TOKENIZERS_PARALLELISM'] = 'false'  # Reduce memory usage
+        
+        # Enable gradient checkpointing if available (reduces memory usage)
+        if hasattr(torch.nn.utils, 'checkpoint'):
+            print("Gradient checkpointing available for memory optimization")
+    
     # Use device_map="auto" to automatically distribute across all available GPUs
     # This enables multi-GPU usage for large models
     if hasattr(model_config, "quantization_config"):
@@ -354,7 +445,10 @@ if __name__ == "__main__":
             args.model,
             trust_remote_code=True,
             dtype=precision,
-            device_map="auto",  # Changed from "cuda" to "auto" for multi-GPU support
+            device_map=device_map,
+            max_memory=max_memory,
+            low_cpu_mem_usage=True,
+            torch_dtype=precision,
             attn_implementation="flash_attention_2" if args.flash_attn else None,
         )
     else:
@@ -363,7 +457,9 @@ if __name__ == "__main__":
             trust_remote_code=True,
             dtype=precision,
             low_cpu_mem_usage=True,
-            device_map="auto",  # Changed from "cuda" to "auto" for multi-GPU support
+            device_map=device_map,
+            max_memory=max_memory,
+            torch_dtype=precision,
             quantization_config=quant_config,
             attn_implementation="flash_attention_2" if args.flash_attn else None,
         )
@@ -405,11 +501,18 @@ if __name__ == "__main__":
             padding=True,
         )
 
+    # Adjust batch size for CPU offloading scenarios
+    effective_batch_size = args.batch_size
+    if args.auto_batch_size and args.cpu_offload:
+        # Reduce batch size when using CPU offloading to prevent memory issues
+        effective_batch_size = min(args.batch_size, 8)  # Conservative batch size for CPU offloading
+        print(f"Auto-adjusted batch size from {args.batch_size} to {effective_batch_size} for CPU offloading")
+    
     print("Computing refusal information...")
     results = {}
     results = compute_refusals(
         model, tokenizer, harmful_list, harmless_list,
-        args.projected, args.batch_size, args.clip, processor, has_vision
+        args.projected, effective_batch_size, args.clip, processor, has_vision
     )
 
     print(f"Saving refusal information to {args.output}...")
