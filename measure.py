@@ -1,6 +1,5 @@
 import gc
 import torch
-import os
 from argparse import ArgumentParser
 from datasets import load_dataset
 from tqdm import tqdm
@@ -30,11 +29,15 @@ Models will spill over to CPU RAM when GPU memory is insufficient.
 3. 8-bit quantization with CPU offloading:
    python measure.py --model your-model --output results.pt --quant-measure 8bit --max-memory "0:90,1:90"
 
+4. Custom CPU memory limit (default is 1000GB):
+   python measure.py --model your-model --output results.pt --max-memory "90" --cpu-memory "500"
+
 For your 2x96GB GPU setup with large models:
    python measure.py --model large-model --output results.pt --max-memory "0:90,1:90"
 
 Note: CPU offloading is automatically enabled when --max-memory is used. The script will
-spill over to CPU RAM when GPU memory is full, preventing disk offloading.
+spill over to CPU RAM when GPU memory is full, preventing disk offloading. Use --cpu-memory
+to control how much CPU RAM can be used for model offloading.
 """
 
 
@@ -54,6 +57,8 @@ def welford_gpu_batched_multilayer_float32(
     if hasattr(text_config, "text_config"):
         text_config = text_config.text_config
     vocab_size = text_config.vocab_size
+
+    max_tokens = 1
 
     means = {layer_idx: None for layer_idx in layer_indices}
     counts = {layer_idx: 0 for layer_idx in layer_indices}
@@ -88,7 +93,7 @@ def welford_gpu_batched_multilayer_float32(
         raw_output = model.generate(
             batch_input,
             attention_mask=batch_mask,
-            max_new_tokens=1,
+            max_new_tokens=max_tokens,
             return_dict_in_generate=True,
             output_hidden_states=True,
             pad_token_id=tokenizer.eos_token_id,
@@ -287,6 +292,12 @@ if __name__ == "__main__":
         default=None,
         help="Maximum memory per GPU in GB (e.g., '10' for 10GB, or '0:10,1:15' for multi-GPU)",
     )
+    parser.add_argument(
+        "--cpu-memory",
+        type=str,
+        default="1000",
+        help="Maximum CPU memory in GB for model offloading (default: 1000GB)",
+    )
 
     args = parser.parse_args()
 
@@ -398,7 +409,7 @@ if __name__ == "__main__":
     # Add CPU memory to max_memory to enable CPU offloading
     if max_memory is None:
         max_memory = {}
-    max_memory['cpu'] = '1000GB'  # Allow CPU offloading
+    max_memory['cpu'] = f"{args.cpu_memory}GB"  # Allow CPU offloading with configurable limit
     print(f"Device memory limits with CPU: {max_memory}")
     
     # Use device_map="auto" with max_memory including CPU
