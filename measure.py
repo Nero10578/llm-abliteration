@@ -11,44 +11,30 @@ from transformers import AutoTokenizer
 from transformers import AutoProcessor
 from transformers import BitsAndBytesConfig
 from transformers import PreTrainedModel, PreTrainedTokenizer, PreTrainedTokenizerFast
-from transformers import infer_auto_device_map
 from utils.data import load_data
 from utils.models import has_tied_weights
 from utils.clip import magnitude_clip
 
 """
-Memory Management and CPU Offloading Usage Examples:
+CPU Offloading Usage Examples:
 
-1. Basic CPU offloading (spills to CPU when VRAM is full):
-   python measure.py --model your-model --output results.pt --cpu-offload
+The script now automatically enables CPU offloading when --max-memory is specified.
+Models will spill over to CPU RAM when GPU memory is insufficient.
 
-2. CPU offloading with max GPU memory limit:
-   python measure.py --model your-model --output results.pt --cpu-offload --max-memory 10
+1. Multi-GPU with memory limits and CPU offloading:
+   python measure.py --model your-model --output results.pt --max-memory "0:90,1:90"
 
-3. Multi-GPU with memory limits and CPU offloading (prevents disk offloading):
-   python measure.py --model your-model --output results.pt --cpu-offload --max-memory "0:90,1:90" --no-disk-offload
+2. Single GPU with memory limit and CPU offloading:
+   python measure.py --model your-model --output results.pt --max-memory "90"
 
-4. Multi-GPU with specific CPU memory allocation:
-   python measure.py --model your-model --output results.pt --cpu-offload --max-memory "0:90,1:90" --cpu-memory "500GB"
-
-5. Force CPU-only loading (useful for very large models):
-   python measure.py --model your-model --output results.pt --device-map cpu
-
-6. Balanced distribution across GPUs with CPU fallback:
-   python measure.py --model your-model --output results.pt --device-map balanced --cpu-offload
-
-7. 8-bit quantization with CPU offloading:
-   python measure.py --model your-model --output results.pt --quant-measure 8bit --cpu-offload
-
-8. Prevent disk offloading (fails if model doesn't fit in GPU+CPU):
-   python measure.py --model your-model --output results.pt --device-map auto --max-memory "0:90,1:90" --no-disk-offload
+3. 8-bit quantization with CPU offloading:
+   python measure.py --model your-model --output results.pt --quant-measure 8bit --max-memory "0:90,1:90"
 
 For your 2x96GB GPU setup with large models:
-   python measure.py --model large-model --output results.pt --cpu-offload --max-memory "0:90,1:90" --cpu-memory "500GB"
+   python measure.py --model large-model --output results.pt --max-memory "0:90,1:90"
 
-Note: The script now uses infer_auto_device_map() which properly allocates CPU memory when specified,
-preventing unwanted disk offloading. Without --no-disk-offload, models that don't fit in GPU+CPU memory
-will offload to disk, which is much slower but allows loading arbitrarily large models.
+Note: CPU offloading is automatically enabled when --max-memory is used. The script will
+spill over to CPU RAM when GPU memory is full, preventing disk offloading.
 """
 
 
@@ -253,12 +239,6 @@ if __name__ == "__main__":
         help="Batch size during inference/calibration; default 32, stick to powers of 2 (higher will use more VRAM)"
     )
     parser.add_argument(
-        "--auto-batch-size",
-        action="store_true",
-        default=False,
-        help="Automatically reduce batch size when using CPU offloading to prevent OOM errors",
-    )
-    parser.add_argument(
         "--output", "-o",
         type=str,
         default=None,
@@ -302,35 +282,10 @@ if __name__ == "__main__":
         help="Remove projection along harmless direction from refusal direction",
     )
     parser.add_argument(
-        "--cpu-offload",
-        action="store_true",
-        default=False,
-        help="Enable CPU offloading when VRAM is insufficient (spills over to CPU RAM)",
-    )
-    parser.add_argument(
         "--max-memory",
         type=str,
         default=None,
         help="Maximum memory per GPU in GB (e.g., '10' for 10GB, or '0:10,1:15' for multi-GPU)",
-    )
-    parser.add_argument(
-        "--device-map",
-        type=str,
-        default="auto",
-        choices=["auto", "balanced", "sequential", "cpu"],
-        help="Device mapping strategy: 'auto' (automatic), 'balanced' (even distribution), 'sequential' (fill GPU0 then GPU1), 'cpu' (force CPU only)",
-    )
-    parser.add_argument(
-        "--no-disk-offload",
-        action="store_true",
-        default=False,
-        help="Prevent disk offloading - will fail if model doesn't fit in GPU+CPU memory",
-    )
-    parser.add_argument(
-        "--cpu-memory",
-        type=str,
-        default=None,
-        help="Amount of CPU memory to allocate for offloading (e.g., '100GB', '500GB')",
     )
 
     args = parser.parse_args()
@@ -421,20 +376,8 @@ if __name__ == "__main__":
         deccp_list = load_dataset("augmxnt/deccp", split="censored")
         harmful_list += deccp_list["text"]
 
-    # Configure device mapping with optional CPU offloading
-    device_map = args.device_map
+    # Configure device mapping with CPU offloading
     max_memory = None
-    
-    if args.cpu_offload:
-        # Enable CPU offloading by setting device_map to "auto" with CPU fallback
-        if device_map == "cpu":
-            print("CPU-only mode selected - model will load entirely on CPU")
-        else:
-            print("CPU offloading enabled - model will spill over to CPU RAM when VRAM is insufficient")
-            # For CPU offloading, we use "auto" but ensure CPU is available as fallback
-            device_map = "auto"
-    else:
-        print(f"Using device mapping strategy: {device_map}")
     
     if args.max_memory:
         # Parse max_memory argument (e.g., "10" or "0:10,1:15")
@@ -453,141 +396,36 @@ if __name__ == "__main__":
             print(f"Invalid max_memory format: {e}. Using default.")
             max_memory = None
     
-    # Handle no-disk-offload option
-    if args.no_disk_offload:
-        print("Disk offloading disabled - model must fit in GPU+CPU memory")
-        # Set environment variable to prevent disk offloading
-        os.environ['TRANSFORMERS_OFFLOAD_DISK'] = 'false'
-        # Add CPU to max_memory to ensure it's considered for offloading
-        if max_memory is None:
-            max_memory = {}
-        max_memory['cpu'] = '1000GB'  # Large value to allow CPU offloading but prevent disk
+    # Add CPU memory to max_memory to enable CPU offloading
+    if max_memory is None:
+        max_memory = {}
+    max_memory['cpu'] = '1000GB'  # Allow CPU offloading
+    print(f"Device memory limits with CPU: {max_memory}")
     
-    # Additional memory management settings for large models
-    if args.cpu_offload or args.max_memory:
-        print("Enabling aggressive memory management for large model loading...")
-        # Set environment variables for better memory management
-        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
-        os.environ['TOKENIZERS_PARALLELISM'] = 'false'  # Reduce memory usage
-        
-        # Enable gradient checkpointing if available (reduces memory usage)
-        if hasattr(torch.nn.utils, 'checkpoint'):
-            print("Gradient checkpointing available for memory optimization")
-    
-    # Use infer_auto_device_map for better control over CPU offloading
-    if args.cpu_offload or args.no_disk_offload:
-        print("Using infer_auto_device_map for better CPU offloading control...")
-        
-        # First load the model without device_map to get the model object
-        if hasattr(model_config, "quantization_config"):
-            model_no_map = AutoModelForCausalLM.from_pretrained(
-                args.model,
-                trust_remote_code=True,
-                dtype=precision,
-                low_cpu_mem_usage=True,
-                torch_dtype=precision,
-                quantization_config=None,  # We'll apply this after device mapping
-                attn_implementation="flash_attention_2" if args.flash_attn else None,
-            )
-        else:
-            model_no_map = model_loader.from_pretrained(
-                args.model,
-                trust_remote_code=True,
-                dtype=precision,
-                low_cpu_mem_usage=True,
-                torch_dtype=precision,
-                quantization_config=None,  # We'll apply this after device mapping
-                attn_implementation="flash_attention_2" if args.flash_attn else None,
-            )
-        
-        # Ensure max_memory includes CPU allocation
-        if max_memory is None:
-            max_memory = {}
-        
-        # Add CPU memory allocation if not present
-        if 'cpu' not in max_memory:
-            if args.cpu_memory:
-                max_memory['cpu'] = args.cpu_memory
-                print(f"Using specified CPU memory limit: {args.cpu_memory}")
-            else:
-                max_memory['cpu'] = '1000GB'  # Large value to allow significant CPU offloading
-                print("Using default CPU memory limit: 1000GB")
-        
-        print(f"Device memory limits: {max_memory}")
-        
-        # Infer the device map
-        device_map = infer_auto_device_map(
-            model_no_map,
-            max_memory=max_memory,
+    # Use device_map="auto" with max_memory including CPU
+    if hasattr(model_config, "quantization_config"):
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model,
+            trust_remote_code=True,
             dtype=precision,
-            no_split_module_classes=None  # Let transformers decide automatically
+            device_map="auto",
+            max_memory=max_memory,
+            low_cpu_mem_usage=True,
+            torch_dtype=precision,
+            attn_implementation="flash_attention_2" if args.flash_attn else None,
         )
-        
-        print(f"Generated device map: {device_map}")
-        
-        # Now load the model with the computed device map
-        del model_no_map  # Free memory
-        torch.cuda.empty_cache()
-        
-        if hasattr(model_config, "quantization_config"):
-            model = AutoModelForCausalLM.from_pretrained(
-                args.model,
-                trust_remote_code=True,
-                dtype=precision,
-                device_map=device_map,
-                low_cpu_mem_usage=True,
-                torch_dtype=precision,
-                quantization_config=quant_config,
-                attn_implementation="flash_attention_2" if args.flash_attn else None,
-            )
-        else:
-            model = model_loader.from_pretrained(
-                args.model,
-                trust_remote_code=True,
-                dtype=precision,
-                low_cpu_mem_usage=True,
-                device_map=device_map,
-                torch_dtype=precision,
-                quantization_config=quant_config,
-                attn_implementation="flash_attention_2" if args.flash_attn else None,
-            )
     else:
-        # Use standard device_map approach
-        try:
-            if hasattr(model_config, "quantization_config"):
-                model = AutoModelForCausalLM.from_pretrained(
-                    args.model,
-                    trust_remote_code=True,
-                    dtype=precision,
-                    device_map=device_map,
-                    max_memory=max_memory,
-                    low_cpu_mem_usage=True,
-                    torch_dtype=precision,
-                    offload_folder=None if args.no_disk_offload else "offload",
-                    offload_state_dict=True if not args.no_disk_offload else False,
-                    attn_implementation="flash_attention_2" if args.flash_attn else None,
-                )
-            else:
-                model = model_loader.from_pretrained(
-                    args.model,
-                    trust_remote_code=True,
-                    dtype=precision,
-                    low_cpu_mem_usage=True,
-                    device_map=device_map,
-                    max_memory=max_memory,
-                    torch_dtype=precision,
-                    quantization_config=quant_config,
-                    offload_folder=None if args.no_disk_offload else "offload",
-                    offload_state_dict=True if not args.no_disk_offload else False,
-                    attn_implementation="flash_attention_2" if args.flash_attn else None,
-                )
-        except Exception as e:
-            if "disk" in str(e).lower() and args.no_disk_offload:
-                print("ERROR: Model requires disk offloading but --no-disk-offload was specified.")
-                print("Try increasing --max-memory limits or use --cpu-offload without --no-disk-offload")
-                raise e
-            else:
-                raise e
+        model = model_loader.from_pretrained(
+            args.model,
+            trust_remote_code=True,
+            dtype=precision,
+            low_cpu_mem_usage=True,
+            device_map="auto",
+            max_memory=max_memory,
+            torch_dtype=precision,
+            quantization_config=quant_config,
+            attn_implementation="flash_attention_2" if args.flash_attn else None,
+        )
     model.requires_grad_(False)
     if has_tied_weights(model_type):
         model.tie_weights()
@@ -626,18 +464,11 @@ if __name__ == "__main__":
             padding=True,
         )
 
-    # Adjust batch size for CPU offloading scenarios
-    effective_batch_size = args.batch_size
-    if args.auto_batch_size and args.cpu_offload:
-        # Reduce batch size when using CPU offloading to prevent memory issues
-        effective_batch_size = min(args.batch_size, 8)  # Conservative batch size for CPU offloading
-        print(f"Auto-adjusted batch size from {args.batch_size} to {effective_batch_size} for CPU offloading")
-    
     print("Computing refusal information...")
     results = {}
     results = compute_refusals(
         model, tokenizer, harmful_list, harmless_list,
-        args.projected, effective_batch_size, args.clip, processor, has_vision
+        args.projected, args.batch_size, args.clip, processor, has_vision
     )
 
     print(f"Saving refusal information to {args.output}...")
