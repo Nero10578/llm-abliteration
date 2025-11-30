@@ -38,38 +38,106 @@ def modify_tensor(
     W: torch.Tensor, refusal_dir: torch.Tensor, scale_factor: float = 1.0,
 ) -> torch.Tensor:
     """
-    Modify weight tensor by ablating refusal direction while preserving row norms.
+    Modify weight tensor by ablating refusal direction.
     Returns a plain tensor (not a Parameter).
+    
+    Handles:
+    - Standard weights (2D matrices)
+    - Routing gates (2D matrices with different dimensions)
+    - GPT-OSS-20B 3D expert tensors [num_experts, hidden_size, hidden_size]
+    - GPT-OSS-20B 2D expert bias tensors [num_experts, hidden_size]
     """
     original_dtype = W.dtype
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     with torch.no_grad():
-        # Move tensors for computation
-        # Transpose here to convert from safetensors convention
-        W_gpu = W.to(device, dtype=torch.float32, non_blocking=True).T
-        refusal_dir_gpu = refusal_dir.to(device, dtype=torch.float32, non_blocking=True)
+        # Handle 3D expert tensors (GPT-OSS-20B)
+        if W.dim() == 3:
+            # W is [num_experts, hidden_size, hidden_size]
+            # We need to ablate each expert individually along the last dimension
+            num_experts, hidden_size, _ = W.shape
+            
+            # Ensure refusal_dir matches the hidden size
+            if refusal_dir.shape[0] != hidden_size:
+                print(f"    Warning: 3D expert tensor hidden_size {hidden_size} doesn't match refusal_dir {refusal_dir.shape[0]}")
+                return W.detach().clone()
+            
+            W_gpu = W.to(device, dtype=torch.float32, non_blocking=True)
+            refusal_dir_gpu = refusal_dir.to(device, dtype=torch.float32, non_blocking=True)
+            
+            if refusal_dir_gpu.dim() > 1:
+                refusal_dir_gpu = refusal_dir_gpu.view(-1)
+            
+            refusal_normalized = torch.nn.functional.normalize(refusal_dir_gpu, dim=0)
+            
+            # Process each expert
+            W_modified = torch.zeros_like(W_gpu)
+            for expert_idx in range(num_experts):
+                # Get expert weight matrix: [hidden_size, hidden_size]
+                expert_W = W_gpu[expert_idx]  # [hidden_size, hidden_size]
+                
+                # Standard ablation for this expert
+                projection = torch.matmul(expert_W, refusal_normalized)  # [hidden_size]
+                W_modified[expert_idx] = expert_W - scale_factor * torch.outer(projection, refusal_normalized)
+            
+            result = W_modified.to('cpu', dtype=original_dtype, non_blocking=True)
+            
+        else:
+            # Handle 2D tensors (standard weights, routing gates, expert biases)
+            # Move tensors for computation
+            # Transpose here to convert from safetensors convention
+            W_gpu = W.to(device, dtype=torch.float32, non_blocking=True).T
+            refusal_dir_gpu = refusal_dir.to(device, dtype=torch.float32, non_blocking=True)
 
-        # Ensure refusal_dir is a 1-dimensional tensor
-        if refusal_dir_gpu.dim() > 1:
-            refusal_dir_gpu = refusal_dir_gpu.view(-1)
-        
-        # Normalize refusal direction
-        refusal_normalized = torch.nn.functional.normalize(refusal_dir_gpu, dim=0)
+            # Ensure refusal_dir is a 1-dimensional tensor
+            if refusal_dir_gpu.dim() > 1:
+                refusal_dir_gpu = refusal_dir_gpu.view(-1)
+            
+            # Check if this is a routing gate or expert bias (different dimensions)
+            # W_gpu is [out_features, in_features]
+            # For routing gates: in_features = hidden_size, out_features = num_experts
+            # For expert biases: in_features = hidden_size, out_features = num_experts
+            # For standard weights: in_features = hidden_size
+            if W_gpu.shape[1] != refusal_dir_gpu.shape[0]:
+                # This is likely a routing gate, expert bias, or other incompatible weight
+                # We can only ablate along the input dimension (hidden_size)
+                # which is the first dimension after transpose
+                if W_gpu.shape[0] == refusal_dir_gpu.shape[0]:
+                    # Ablate along the first dimension (rows in transposed view)
+                    refusal_normalized = torch.nn.functional.normalize(refusal_dir_gpu, dim=0)
+                    
+                    # For each output (expert), compute projection and subtract
+                    projection = torch.matmul(refusal_normalized, W_gpu)  # [out_features]
+                    
+                    # Subtract the projection
+                    W_modified = W_gpu - scale_factor * torch.outer(refusal_normalized, projection)
+                else:
+                    # Cannot ablate this weight - dimensions don't match
+                    # Return original weight unchanged
+                    print(f"    Warning: Skipping weight with incompatible shape {W.shape} (refusal_dir: {refusal_dir.shape})")
+                    return W.detach().clone()
+            else:
+                # Standard ablation for compatible weights
+                # Normalize refusal direction
+                refusal_normalized = torch.nn.functional.normalize(refusal_dir_gpu, dim=0)
 
-        # Apply abliteration
-        # Compute dot product of each row with refusal direction
-        projection = torch.matmul(W_gpu, refusal_normalized)  # [in_features]
-        
-        # Subtract the projection
-        W_gpu -= scale_factor * torch.outer(projection, refusal_normalized)
-        
-        # Convert back to original dtype and CPU
-        # Transpose here to return safetensors convention
-        result = W_gpu.T.to('cpu', dtype=original_dtype, non_blocking=True)
+                # Apply abliteration
+                # Compute dot product of each row with refusal direction
+                projection = torch.matmul(W_gpu, refusal_normalized)  # [out_features]
+                
+                # Subtract the projection
+                W_modified = W_gpu - scale_factor * torch.outer(projection, refusal_normalized)
+            
+            # Convert back to original dtype and CPU
+            # Transpose here to return safetensors convention
+            result = W_modified.T.to('cpu', dtype=original_dtype, non_blocking=True)
 
         # Cleanup
-        del W_gpu, refusal_dir_gpu, refusal_normalized, projection
+        del W_gpu, refusal_dir_gpu, refusal_normalized
+        if W.dim() == 3:
+            del W_modified
+        else:
+            del projection, W_modified
         
         if torch.cuda.is_available():
             torch.cuda.synchronize()
@@ -84,48 +152,133 @@ def modify_tensor_norm_preserved(
     """
     Modify weight tensor by ablating refusal direction while preserving row norms.
     Returns a plain tensor (not a Parameter).
+    
+    Handles:
+    - Standard weights (2D matrices)
+    - Routing gates (2D matrices with different dimensions)
+    - GPT-OSS-20B 3D expert tensors [num_experts, hidden_size, hidden_size]
+    - GPT-OSS-20B 2D expert bias tensors [num_experts, hidden_size]
     """
     original_dtype = W.dtype
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     with torch.no_grad():
-        # Move tensors for computation
-        # Transpose here to convert from safetensors convention
-        W_gpu = W.to(device, dtype=torch.float32, non_blocking=True).T
-        refusal_dir_gpu = refusal_dir.to(device, dtype=torch.float32, non_blocking=True)
+        # Handle 3D expert tensors (GPT-OSS-20B)
+        if W.dim() == 3:
+            # W is [num_experts, hidden_size, hidden_size]
+            # We need to ablate each expert individually along the last dimension
+            num_experts, hidden_size, _ = W.shape
+            
+            # Ensure refusal_dir matches the hidden size
+            if refusal_dir.shape[0] != hidden_size:
+                print(f"    Warning: 3D expert tensor hidden_size {hidden_size} doesn't match refusal_dir {refusal_dir.shape[0]}")
+                return W.detach().clone()
+            
+            W_gpu = W.to(device, dtype=torch.float32, non_blocking=True)
+            refusal_dir_gpu = refusal_dir.to(device, dtype=torch.float32, non_blocking=True)
+            
+            if refusal_dir_gpu.dim() > 1:
+                refusal_dir_gpu = refusal_dir_gpu.view(-1)
+            
+            refusal_normalized = torch.nn.functional.normalize(refusal_dir_gpu, dim=0)
+            
+            # Process each expert
+            W_modified = torch.zeros_like(W_gpu)
+            for expert_idx in range(num_experts):
+                # Get expert weight matrix: [hidden_size, hidden_size]
+                expert_W = W_gpu[expert_idx]  # [hidden_size, hidden_size]
+                
+                # Standard ablation for this expert
+                W_norm = torch.norm(expert_W, dim=1, keepdim=True)  # [hidden_size, 1]
+                W_direction = torch.nn.functional.normalize(expert_W, dim=1)  # normalized per output neuron
+                
+                # Apply abliteration to the DIRECTIONAL component
+                projection = torch.matmul(W_direction, refusal_normalized)  # [hidden_size]
+                W_direction_new = W_direction - scale_factor * torch.outer(projection, refusal_normalized)
+                W_direction_new = torch.nn.functional.normalize(W_direction_new, dim=1)
+                
+                # Recombine
+                W_modified[expert_idx] = W_norm * W_direction_new
+            
+            result = W_modified.to('cpu', dtype=original_dtype, non_blocking=True)
+            
+        else:
+            # Handle 2D tensors (standard weights, routing gates, expert biases)
+            # Move tensors for computation
+            # Transpose here to convert from safetensors convention
+            W_gpu = W.to(device, dtype=torch.float32, non_blocking=True).T
+            refusal_dir_gpu = refusal_dir.to(device, dtype=torch.float32, non_blocking=True)
 
-        # Ensure refusal_dir is a 1-dimensional tensor
-        if refusal_dir_gpu.dim() > 1:
-            refusal_dir_gpu = refusal_dir_gpu.view(-1)
-        
-        # Normalize refusal direction
-        refusal_normalized = torch.nn.functional.normalize(refusal_dir_gpu, dim=0)
+            # Ensure refusal_dir is a 1-dimensional tensor
+            if refusal_dir_gpu.dim() > 1:
+                refusal_dir_gpu = refusal_dir_gpu.view(-1)
+            
+            # Check if this is a routing gate or expert bias (different dimensions)
+            # W_gpu is [out_features, in_features]
+            # For routing gates: in_features = hidden_size, out_features = num_experts
+            # For expert biases: in_features = hidden_size, out_features = num_experts
+            # For standard weights: in_features = hidden_size
+            if W_gpu.shape[1] != refusal_dir_gpu.shape[0]:
+                # This is likely a routing gate, expert bias, or other incompatible weight
+                # We can only ablate along the input dimension (hidden_size)
+                # which is the first dimension after transpose
+                if W_gpu.shape[0] == refusal_dir_gpu.shape[0]:
+                    # Ablate along the first dimension (rows in transposed view)
+                    refusal_normalized = torch.nn.functional.normalize(refusal_dir_gpu, dim=0)
+                    
+                    # For each output (expert), compute projection and subtract
+                    W_norm = torch.norm(W_gpu, dim=0, keepdim=True)  # [1, out_features]
+                    W_direction = torch.nn.functional.normalize(W_gpu, dim=0)  # normalized per output
+                    
+                    # Compute projection for each output
+                    projection = torch.matmul(refusal_normalized, W_direction)  # [out_features]
+                    
+                    # Subtract the projection
+                    W_direction_new = W_direction - scale_factor * torch.outer(refusal_normalized, projection)
+                    
+                    # Re-normalize
+                    W_direction_new = torch.nn.functional.normalize(W_direction_new, dim=0)
+                    
+                    # Recombine
+                    W_modified = W_norm * W_direction_new
+                else:
+                    # Cannot ablate this weight - dimensions don't match
+                    # Return original weight unchanged
+                    print(f"    Warning: Skipping weight with incompatible shape {W.shape} (refusal_dir: {refusal_dir.shape})")
+                    return W.detach().clone()
+            else:
+                # Standard ablation for compatible weights
+                # Normalize refusal direction
+                refusal_normalized = torch.nn.functional.normalize(refusal_dir_gpu, dim=0)
 
-        # Decompose weight matrix
-        # W_gpu is [out_features, in_features]
-        W_norm = torch.norm(W_gpu, dim=1, keepdim=True)  # [out_features, 1]
-        W_direction = torch.nn.functional.normalize(W_gpu, dim=1)  # normalized per output neuron
-    
-        # Apply abliteration to the DIRECTIONAL component
-        # Compute dot product of each row with refusal direction
-        projection = torch.matmul(W_direction, refusal_normalized)  # [in_features]
-        
-        # Subtract the projection
-        W_direction_new = W_direction - scale_factor * torch.outer(projection, refusal_normalized)
-    
-        # Re-normalize the adjusted direction
-        W_direction_new = torch.nn.functional.normalize(W_direction_new, dim=1)
-    
-        # Recombine: keep original magnitude, use new direction
-        W_modified = W_norm * W_direction_new
-        
-        # Convert back to original dtype and CPU
-        # Transpose here to return safetensors convention
-        result = W_modified.T.to('cpu', dtype=original_dtype, non_blocking=True)
+                # Decompose weight matrix
+                # W_gpu is [out_features, in_features]
+                W_norm = torch.norm(W_gpu, dim=1, keepdim=True)  # [out_features, 1]
+                W_direction = torch.nn.functional.normalize(W_gpu, dim=1)  # normalized per output neuron
+            
+                # Apply abliteration to the DIRECTIONAL component
+                # Compute dot product of each row with refusal direction
+                projection = torch.matmul(W_direction, refusal_normalized)  # [out_features]
+                
+                # Subtract the projection
+                W_direction_new = W_direction - scale_factor * torch.outer(projection, refusal_normalized)
+            
+                # Re-normalize the adjusted direction
+                W_direction_new = torch.nn.functional.normalize(W_direction_new, dim=1)
+            
+                # Recombine: keep original magnitude, use new direction
+                W_modified = W_norm * W_direction_new
+            
+            # Convert back to original dtype and CPU
+            # Transpose here to return safetensors convention
+            result = W_modified.T.to('cpu', dtype=original_dtype, non_blocking=True)
 
         # Cleanup
-        del W_gpu, refusal_dir_gpu, refusal_normalized, projection
-        del W_direction, W_direction_new, W_norm, W_modified
+        del W_gpu, refusal_dir_gpu, refusal_normalized
+        if W.dim() == 3:
+            del W_modified
+        else:
+            del W_direction, W_direction_new, W_norm, projection, W_modified
         
         if torch.cuda.is_available():
             torch.cuda.synchronize()
@@ -139,13 +292,21 @@ def ablate_by_layers_sharded(
     measures: dict,
     marching_orders: list,
     output_path: str,
-    norm_preserve: bool,
-    projected: bool,
+    norm_preserve: bool = True,
+    projected: bool = True,
 ) -> None:
     """
     Memory-efficient ablation for sharded models.
     Handles both local paths and HuggingFace Hub models.
     Loads one shard at a time, applies all modifications, then saves.
+    
+    Args:
+        model_name: Path or HuggingFace identifier of the model
+        measures: Dictionary of measurement tensors
+        marching_orders: List of (layer, measurement, scale, sparsity) tuples
+        output_path: Directory to save the modified model
+        norm_preserve: Whether to preserve row norms during ablation
+        projected: Whether to orthogonalize refusal direction against harmless direction
     """
     
     # Load config using transformers (handles both local and HF hub)
@@ -200,9 +361,50 @@ def ablate_by_layers_sharded(
         o_proj_pattern = f"{layer_prefix}.layers.{layer}.self_attn.o_proj.weight"
         down_proj_pattern = f"{layer_prefix}.layers.{layer}.mlp.down_proj.weight"
         
+        # MoE-specific patterns for GLM-4.5-Air and similar architectures
+        experts_down_proj_prefix = f"{layer_prefix}.layers.{layer}.mlp.experts."
+        shared_experts_down_proj = f"{layer_prefix}.layers.{layer}.mlp.shared_experts.down_proj.weight"
+        gate_pattern = f"{layer_prefix}.layers.{layer}.mlp.gate.weight"  # MoE routing gate
+        
+        # GPT-OSS-20B specific patterns
+        gpt_oss_experts_down_proj = f"{layer_prefix}.layers.{layer}.mlp.experts.down_proj"
+        gpt_oss_experts_down_proj_bias = f"{layer_prefix}.layers.{layer}.mlp.experts.down_proj_bias"
+        gpt_oss_router_pattern = f"{layer_prefix}.layers.{layer}.mlp.router.weight"
+        
         # Find keys that match
         for key, shard_file in weight_map.items():
+            # Standard patterns
             if key == o_proj_pattern or key == down_proj_pattern:
+                if shard_file not in shard_modifications:
+                    shard_modifications[shard_file] = []
+                shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))
+            # MoE expert patterns - only down_proj (like dense models)
+            elif key.startswith(experts_down_proj_prefix) and key.endswith(".down_proj.weight"):
+                if shard_file not in shard_modifications:
+                    shard_modifications[shard_file] = []
+                shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))
+            # MoE shared experts - only down_proj
+            elif key == shared_experts_down_proj:
+                if shard_file not in shard_modifications:
+                    shard_modifications[shard_file] = []
+                shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))
+            # MoE routing gate - CRITICAL for preventing refusal routing
+            elif key == gate_pattern:
+                if shard_file not in shard_modifications:
+                    shard_modifications[shard_file] = []
+                shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))
+            # GPT-OSS-20B expert patterns - 3D tensor for all experts
+            elif key == gpt_oss_experts_down_proj:
+                if shard_file not in shard_modifications:
+                    shard_modifications[shard_file] = []
+                shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))
+            # GPT-OSS-20B expert bias patterns - 2D tensor for all experts
+            elif key == gpt_oss_experts_down_proj_bias:
+                if shard_file not in shard_modifications:
+                    shard_modifications[shard_file] = []
+                shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))
+            # GPT-OSS-20B router weight - CRITICAL for preventing refusal routing
+            elif key == gpt_oss_router_pattern:
                 if shard_file not in shard_modifications:
                     shard_modifications[shard_file] = []
                 shard_modifications[shard_file].append((key, layer, measurement, scale, sparsity))
@@ -232,14 +434,13 @@ def ablate_by_layers_sharded(
                     refusal_dir = measures[f'refuse_{measurement}'].float()
                     harmless_dir = measures[f'harmless_{layer}'].float()
                     
-
                     if projected:
                         # Here we orthogonalize refusal with respect to harmless direction.
                         # We compute the second orthogonalized vector from Gram-Schmitt orthonormalization.
-
+                        
                         # Normalize harmless direction
                         harmless_normalized = torch.nn.functional.normalize(harmless_dir, dim=0)
-                    
+                        
                         # Project and subtract to refine refusal direction
                         projection_scalar = refusal_dir @ harmless_normalized
                         refined_refusal_dir = refusal_dir - projection_scalar * harmless_normalized
@@ -253,16 +454,56 @@ def ablate_by_layers_sharded(
                     # Normalize
                     refusal_dir = torch.nn.functional.normalize(refusal_dir, dim=-1)
                     
+                    # Handle GPT-OSS-20B hidden size mismatch
+                    weight_tensor = state_dict[key]
+                    if weight_tensor.dim() == 3:
+                        # 3D expert tensor: [num_experts, hidden_size, hidden_size]
+                        target_hidden_size = weight_tensor.shape[1]
+                    elif weight_tensor.dim() == 2:
+                        # 2D tensor: check if we need to transpose for hidden size compatibility
+                        if weight_tensor.shape[1] == refusal_dir.shape[0]:
+                            target_hidden_size = weight_tensor.shape[1]
+                        elif weight_tensor.shape[0] == refusal_dir.shape[0]:
+                            target_hidden_size = weight_tensor.shape[0]
+                        else:
+                            # Hidden size mismatch - need to resize refusal direction
+                            target_hidden_size = weight_tensor.shape[1] if weight_tensor.shape[1] in [2880, 4096] else weight_tensor.shape[0]
+                    else:
+                        target_hidden_size = refusal_dir.shape[0]
+                    
+                    # Resize refusal direction if needed (for GPT-OSS-20B attention vs MLP mismatch)
+                    if refusal_dir.shape[0] != target_hidden_size:
+                        if target_hidden_size in [2880, 4096] and refusal_dir.shape[0] in [2880, 4096]:
+                            print(f"    Resizing refusal direction from {refusal_dir.shape[0]} to {target_hidden_size}")
+                            if target_hidden_size > refusal_dir.shape[0]:
+                                # Upsample (e.g., 2880 -> 4096)
+                                refusal_dir = torch.nn.functional.interpolate(
+                                    refusal_dir.unsqueeze(0).unsqueeze(0),
+                                    size=target_hidden_size,
+                                    mode='linear',
+                                    align_corners=False
+                                ).squeeze()
+                            else:
+                                # Downsample (e.g., 4096 -> 2880)
+                                refusal_dir = torch.nn.functional.interpolate(
+                                    refusal_dir.unsqueeze(0).unsqueeze(0),
+                                    size=target_hidden_size,
+                                    mode='linear',
+                                    align_corners=False
+                                ).squeeze()
+                            # Re-normalize after resizing
+                            refusal_dir = torch.nn.functional.normalize(refusal_dir, dim=-1)
+                    
                     # Apply modification
                     if norm_preserve:
                         state_dict[key] = modify_tensor_norm_preserved(
-                            state_dict[key],
+                            weight_tensor,
                             refusal_dir,
                             scale,
                         ).contiguous()
                     else:
                         state_dict[key] = modify_tensor(
-                            state_dict[key],
+                            weight_tensor,
                             refusal_dir,
                             scale,
                         ).contiguous()
@@ -329,14 +570,26 @@ def main():
     parser.add_argument(
         '--normpreserve',
         action="store_true",
-        default=False,
+        default=True,
         help='Preserve norms/magnitudes when ablating refusal',
+    )
+    parser.add_argument(
+        '--no-normpreserve',
+        action="store_false",
+        dest='normpreserve',
+        help='Do not preserve norms/magnitudes when ablating refusal',
     )
     parser.add_argument(
         '--projected',
         action="store_true",
-        default=False,
+        default=True,
         help='Project refusal against harmless direction and orthogonalize',
+    )
+    parser.add_argument(
+        '--no-projected',
+        action="store_false",
+        dest='projected',
+        help='Do not project refusal against harmless direction',
     )
     
     args = parser.parse_args()
