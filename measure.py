@@ -21,20 +21,24 @@ CPU Offloading Usage Examples:
 The script now automatically enables CPU offloading when --max-memory is specified.
 Models will spill over to CPU RAM when GPU memory is insufficient.
 
-1. Multi-GPU with memory limits and CPU offloading:
+1. Multi-GPU with memory limits and CPU offloading (lazy loading):
    python measure.py --model your-model --output results.pt --max-memory "0:90,1:90"
 
-2. Single GPU with memory limit and CPU offloading:
+2. Multi-GPU with memory limits and preloaded weights (faster):
+   python measure.py --model your-model --output results.pt --max-memory "0:90,1:90" --preload-weights
+
+3. Single GPU with memory limit and CPU offloading:
    python measure.py --model your-model --output results.pt --max-memory "90"
 
-3. 8-bit quantization with CPU offloading:
+4. 8-bit quantization with CPU offloading:
    python measure.py --model your-model --output results.pt --quant-measure 8bit --max-memory "0:90,1:90"
 
 For your 2x96GB GPU setup with large models:
-   python measure.py --model large-model --output results.pt --max-memory "0:90,1:90"
+   python measure.py --model large-model --output results.pt --max-memory "0:90,1:90" --preload-weights
 
-Note: CPU offloading is automatically enabled when --max-memory is used. The script will
-spill over to CPU RAM when GPU memory is full, preventing disk offloading.
+Note:
+- Without --preload-weights: Uses lazy loading (slower, less initial RAM usage)
+- With --preload-weights: Loads all weights immediately (faster inference, more RAM usage)
 """
 
 
@@ -287,6 +291,12 @@ if __name__ == "__main__":
         default=None,
         help="Maximum memory per GPU in GB (e.g., '10' for 10GB, or '0:10,1:15' for multi-GPU)",
     )
+    parser.add_argument(
+        "--preload-weights",
+        action="store_true",
+        default=False,
+        help="Preload all offloaded weights into CPU RAM immediately (faster inference, more RAM usage)",
+    )
 
     args = parser.parse_args()
 
@@ -412,6 +422,7 @@ if __name__ == "__main__":
             max_memory=max_memory,
             low_cpu_mem_usage=True,
             torch_dtype=precision,
+            offload_state_dict=not args.preload_weights,
             attn_implementation="flash_attention_2" if args.flash_attn else None,
         )
     else:
@@ -424,8 +435,14 @@ if __name__ == "__main__":
             max_memory=max_memory,
             torch_dtype=precision,
             quantization_config=quant_config,
+            offload_state_dict=not args.preload_weights,
             attn_implementation="flash_attention_2" if args.flash_attn else None,
         )
+    
+    if args.preload_weights:
+        print("All offloaded weights preloaded into CPU RAM for faster inference")
+    else:
+        print("Using lazy loading for offloaded weights (slower inference, less initial RAM usage)")
     model.requires_grad_(False)
     if has_tied_weights(model_type):
         model.tie_weights()
