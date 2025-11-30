@@ -11,6 +11,7 @@ from transformers import AutoTokenizer
 from transformers import AutoProcessor
 from transformers import BitsAndBytesConfig
 from transformers import PreTrainedModel, PreTrainedTokenizer, PreTrainedTokenizerFast
+from transformers import infer_auto_device_map
 from utils.data import load_data
 from utils.models import has_tied_weights
 from utils.clip import magnitude_clip
@@ -27,20 +28,27 @@ Memory Management and CPU Offloading Usage Examples:
 3. Multi-GPU with memory limits and CPU offloading (prevents disk offloading):
    python measure.py --model your-model --output results.pt --cpu-offload --max-memory "0:90,1:90" --no-disk-offload
 
-4. Force CPU-only loading (useful for very large models):
+4. Multi-GPU with specific CPU memory allocation:
+   python measure.py --model your-model --output results.pt --cpu-offload --max-memory "0:90,1:90" --cpu-memory "500GB"
+
+5. Force CPU-only loading (useful for very large models):
    python measure.py --model your-model --output results.pt --device-map cpu
 
-5. Balanced distribution across GPUs with CPU fallback:
+6. Balanced distribution across GPUs with CPU fallback:
    python measure.py --model your-model --output results.pt --device-map balanced --cpu-offload
 
-6. 8-bit quantization with CPU offloading:
+7. 8-bit quantization with CPU offloading:
    python measure.py --model your-model --output results.pt --quant-measure 8bit --cpu-offload
 
-7. Prevent disk offloading (fails if model doesn't fit in GPU+CPU):
+8. Prevent disk offloading (fails if model doesn't fit in GPU+CPU):
    python measure.py --model your-model --output results.pt --device-map auto --max-memory "0:90,1:90" --no-disk-offload
 
-Note: Without --no-disk-offload, models that don't fit in GPU+CPU memory will offload to disk,
-which is much slower but allows loading arbitrarily large models.
+For your 2x96GB GPU setup with large models:
+   python measure.py --model large-model --output results.pt --cpu-offload --max-memory "0:90,1:90" --cpu-memory "500GB"
+
+Note: The script now uses infer_auto_device_map() which properly allocates CPU memory when specified,
+preventing unwanted disk offloading. Without --no-disk-offload, models that don't fit in GPU+CPU memory
+will offload to disk, which is much slower but allows loading arbitrarily large models.
 """
 
 
@@ -318,6 +326,12 @@ if __name__ == "__main__":
         default=False,
         help="Prevent disk offloading - will fail if model doesn't fit in GPU+CPU memory",
     )
+    parser.add_argument(
+        "--cpu-memory",
+        type=str,
+        default=None,
+        help="Amount of CPU memory to allocate for offloading (e.g., '100GB', '500GB')",
+    )
 
     args = parser.parse_args()
 
@@ -460,20 +474,70 @@ if __name__ == "__main__":
         if hasattr(torch.nn.utils, 'checkpoint'):
             print("Gradient checkpointing available for memory optimization")
     
-    # Use device_map="auto" to automatically distribute across all available GPUs
-    # This enables multi-GPU usage for large models
-    try:
+    # Use infer_auto_device_map for better control over CPU offloading
+    if args.cpu_offload or args.no_disk_offload:
+        print("Using infer_auto_device_map for better CPU offloading control...")
+        
+        # First load the model without device_map to get the model object
+        if hasattr(model_config, "quantization_config"):
+            model_no_map = AutoModelForCausalLM.from_pretrained(
+                args.model,
+                trust_remote_code=True,
+                dtype=precision,
+                low_cpu_mem_usage=True,
+                torch_dtype=precision,
+                quantization_config=None,  # We'll apply this after device mapping
+                attn_implementation="flash_attention_2" if args.flash_attn else None,
+            )
+        else:
+            model_no_map = model_loader.from_pretrained(
+                args.model,
+                trust_remote_code=True,
+                dtype=precision,
+                low_cpu_mem_usage=True,
+                torch_dtype=precision,
+                quantization_config=None,  # We'll apply this after device mapping
+                attn_implementation="flash_attention_2" if args.flash_attn else None,
+            )
+        
+        # Ensure max_memory includes CPU allocation
+        if max_memory is None:
+            max_memory = {}
+        
+        # Add CPU memory allocation if not present
+        if 'cpu' not in max_memory:
+            if args.cpu_memory:
+                max_memory['cpu'] = args.cpu_memory
+                print(f"Using specified CPU memory limit: {args.cpu_memory}")
+            else:
+                max_memory['cpu'] = '1000GB'  # Large value to allow significant CPU offloading
+                print("Using default CPU memory limit: 1000GB")
+        
+        print(f"Device memory limits: {max_memory}")
+        
+        # Infer the device map
+        device_map = infer_auto_device_map(
+            model_no_map,
+            max_memory=max_memory,
+            dtype=precision,
+            no_split_module_classes=None  # Let transformers decide automatically
+        )
+        
+        print(f"Generated device map: {device_map}")
+        
+        # Now load the model with the computed device map
+        del model_no_map  # Free memory
+        torch.cuda.empty_cache()
+        
         if hasattr(model_config, "quantization_config"):
             model = AutoModelForCausalLM.from_pretrained(
                 args.model,
                 trust_remote_code=True,
                 dtype=precision,
                 device_map=device_map,
-                max_memory=max_memory,
                 low_cpu_mem_usage=True,
                 torch_dtype=precision,
-                offload_folder=None if args.no_disk_offload else "offload",
-                offload_state_dict=True if not args.no_disk_offload else False,
+                quantization_config=quant_config,
                 attn_implementation="flash_attention_2" if args.flash_attn else None,
             )
         else:
@@ -483,20 +547,47 @@ if __name__ == "__main__":
                 dtype=precision,
                 low_cpu_mem_usage=True,
                 device_map=device_map,
-                max_memory=max_memory,
                 torch_dtype=precision,
                 quantization_config=quant_config,
-                offload_folder=None if args.no_disk_offload else "offload",
-                offload_state_dict=True if not args.no_disk_offload else False,
                 attn_implementation="flash_attention_2" if args.flash_attn else None,
             )
-    except Exception as e:
-        if "disk" in str(e).lower() and args.no_disk_offload:
-            print("ERROR: Model requires disk offloading but --no-disk-offload was specified.")
-            print("Try increasing --max-memory limits or use --cpu-offload without --no-disk-offload")
-            raise e
-        else:
-            raise e
+    else:
+        # Use standard device_map approach
+        try:
+            if hasattr(model_config, "quantization_config"):
+                model = AutoModelForCausalLM.from_pretrained(
+                    args.model,
+                    trust_remote_code=True,
+                    dtype=precision,
+                    device_map=device_map,
+                    max_memory=max_memory,
+                    low_cpu_mem_usage=True,
+                    torch_dtype=precision,
+                    offload_folder=None if args.no_disk_offload else "offload",
+                    offload_state_dict=True if not args.no_disk_offload else False,
+                    attn_implementation="flash_attention_2" if args.flash_attn else None,
+                )
+            else:
+                model = model_loader.from_pretrained(
+                    args.model,
+                    trust_remote_code=True,
+                    dtype=precision,
+                    low_cpu_mem_usage=True,
+                    device_map=device_map,
+                    max_memory=max_memory,
+                    torch_dtype=precision,
+                    quantization_config=quant_config,
+                    offload_folder=None if args.no_disk_offload else "offload",
+                    offload_state_dict=True if not args.no_disk_offload else False,
+                    attn_implementation="flash_attention_2" if args.flash_attn else None,
+                )
+        except Exception as e:
+            if "disk" in str(e).lower() and args.no_disk_offload:
+                print("ERROR: Model requires disk offloading but --no-disk-offload was specified.")
+                print("Try increasing --max-memory limits or use --cpu-offload without --no-disk-offload")
+                raise e
+            else:
+                raise e
     model.requires_grad_(False)
     if has_tied_weights(model_type):
         model.tie_weights()
