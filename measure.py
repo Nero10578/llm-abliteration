@@ -407,11 +407,14 @@ if __name__ == "__main__":
             attn_implementation=attn_impl,
         )
     else:
+        # low_cpu_mem_usage conflicts with BitsAndBytes quantization
+        # Only use it when not quantizing
+        low_cpu_mem = not qbit
         model = model_loader.from_pretrained(
             args.model,
 #            trust_remote_code=True,
             dtype=precision,
-            low_cpu_mem_usage=True,
+            low_cpu_mem_usage=low_cpu_mem,
             device_map=device_map,
             quantization_config=quant_config,
             attn_implementation=attn_impl,
