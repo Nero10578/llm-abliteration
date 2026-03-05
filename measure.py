@@ -340,10 +340,10 @@ if __name__ == "__main__":
     quant_config = None
     qbit = args.quant_measure
 
-    # Force device_map to "cuda" when using quantization to avoid CPU/disk offloading
-    # This prevents the error when the model actually fits in GPU memory
+    # When using quantization, use "sequential" device_map to prevent CPU/disk offloading
+    # while still supporting multi-GPU distribution
     if qbit and device == "cuda":
-        device_map = "cuda"
+        device_map = "sequential"
 
     if device == "mps" and qbit:
         print("BitsAndBytes quantization is not supported on MPS; disabling requested quantization.")
