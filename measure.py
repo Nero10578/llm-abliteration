@@ -424,10 +424,14 @@ if __name__ == "__main__":
             max_memory = None
     
     # Add CPU memory to max_memory to enable CPU offloading
+    # Only add CPU if cpu_memory > 0 to avoid issues with 8-bit quantization
     if max_memory is None:
         max_memory = {}
-    max_memory['cpu'] = f"{args.cpu_memory}GB"  # Allow CPU offloading with configurable limit
-    print(f"Device memory limits with CPU: {max_memory}")
+    if int(args.cpu_memory) > 0:
+        max_memory['cpu'] = f"{args.cpu_memory}GB"  # Allow CPU offloading with configurable limit
+        print(f"Device memory limits with CPU: {max_memory}")
+    else:
+        print(f"Device memory limits (CPU offloading disabled): {max_memory}")
 
     attn_impl = "flash_attention_2" if args.flash_attn and device == "cuda" else None
 
