@@ -282,6 +282,18 @@ if __name__ == "__main__":
         default=False,
         help="Remove projection along harmless direction from refusal direction",
     )
+    parser.add_argument(
+        "--max-memory",
+        type=str,
+        default=None,
+        help="Maximum memory per GPU in GB (e.g., '10' for 10GB, or '0:10,1:15' for multi-GPU)",
+    )
+    parser.add_argument(
+        "--cpu-memory",
+        type=str,
+        default="1000",
+        help="Maximum CPU memory in GB for model offloading (default: 1000GB)",
+    )
 
     args = parser.parse_args()
 
@@ -391,6 +403,32 @@ if __name__ == "__main__":
         deccp_list = load_dataset("augmxnt/deccp", split="censored")
         harmful_list += deccp_list["text"]
 
+    # Configure device mapping with CPU offloading
+    max_memory = None
+    
+    if args.max_memory:
+        # Parse max_memory argument (e.g., "10" or "0:10,1:15")
+        try:
+            if ":" in args.max_memory:
+                # Multi-GPU format: "0:10,1:15"
+                max_memory = {}
+                for gpu_mem in args.max_memory.split(","):
+                    gpu_id, mem_gb = gpu_mem.split(":")
+                    max_memory[int(gpu_id)] = f"{mem_gb}GB"
+            else:
+                # Single GPU format: "10"
+                max_memory = {0: f"{args.max_memory}GB"}
+            print(f"Max memory per GPU set to: {max_memory}")
+        except Exception as e:
+            print(f"Invalid max_memory format: {e}. Using default.")
+            max_memory = None
+    
+    # Add CPU memory to max_memory to enable CPU offloading
+    if max_memory is None:
+        max_memory = {}
+    max_memory['cpu'] = f"{args.cpu_memory}GB"  # Allow CPU offloading with configurable limit
+    print(f"Device memory limits with CPU: {max_memory}")
+
     attn_impl = "flash_attention_2" if args.flash_attn and device == "cuda" else None
 
     if hasattr(model_config, "quantization_config"):
@@ -398,7 +436,10 @@ if __name__ == "__main__":
             args.model,
 #            trust_remote_code=True,
             dtype=precision,
-            device_map=device_map,
+            device_map="auto",
+            max_memory=max_memory,
+            low_cpu_mem_usage=True,
+            torch_dtype=precision,
             attn_implementation=attn_impl,
         )
     else:
@@ -407,7 +448,9 @@ if __name__ == "__main__":
 #            trust_remote_code=True,
             dtype=precision,
             low_cpu_mem_usage=True,
-            device_map=device_map,
+            device_map="auto",
+            max_memory=max_memory,
+            torch_dtype=precision,
             quantization_config=quant_config,
             attn_implementation=attn_impl,
         )
@@ -429,7 +472,7 @@ if __name__ == "__main__":
         try:
             processor = AutoProcessor.from_pretrained(
                 args.model,
-                device_map=device_map,
+                device_map="cuda",
                 padding=True,
             )
             tokenizer = processor.tokenizer
@@ -441,14 +484,14 @@ if __name__ == "__main__":
             tokenizer = AutoTokenizer.from_pretrained(
                 args.model,
 #                trust_remote_code=True,
-                device_map=device_map,
+                device_map="cuda",
                 padding=True,
             )
     else:
         tokenizer = AutoTokenizer.from_pretrained(
             args.model,
-#            trust_remote_code=True,
-            device_map=device_map,
+#                trust_remote_code=True,
+            device_map="cuda",
             padding=True,
         )
 
