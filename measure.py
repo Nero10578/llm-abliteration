@@ -296,6 +296,11 @@ if __name__ == "__main__":
 
     device = get_preferred_device()
     device_map = resolve_device_map()
+    
+    # Force device_map to "cuda" when using quantization to avoid CPU/disk offloading
+    # This prevents the error when the model actually fits in GPU memory
+    if qbit and device == "cuda":
+        device_map = "cuda"
 
     model = args.model
     model_config = AutoConfig.from_pretrained(model)
