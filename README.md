@@ -100,6 +100,20 @@ python compare.py -a <model_a> -b <model_b>
 ```
 Inherited code that is in need of an update to remain useful.
 
+### Refusal Circuit Scanner (NEW)
+
+Inspired by David Noel Ng's "LLM Neuroanatomy" research, this tool systematically identifies the "refusal circuit" - the contiguous block of layers that most effectively removes refusals while preserving capabilities.
+
+```shell
+# Full sweep to generate heatmaps and find optimal layers
+python refusal_circuit_scanner.py -m <model> --measurements <measurements_file> -o <output_dir> --sweep --num-layers 64
+
+# Single configuration scan
+python refusal_circuit_scanner.py -m <model> --measurements <measurements_file> -o <output_dir> --start 30 --end 40
+```
+
+See [REFUSAL_CIRCUIT_SCANNER.md](REFUSAL_CIRCUIT_SCANNER.md) for detailed documentation.
+
 ## Advanced Usage
 
 ### Use your own prompts
