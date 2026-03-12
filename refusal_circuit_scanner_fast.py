@@ -4,11 +4,16 @@ Refusal Circuit Scanner (Fast Version) - A "brain scanner" for identifying refus
 This version applies abliteration on-the-fly during inference, eliminating the need to save/load
 models for each configuration. Much faster than the original version.
 
+Supports multi-GPU parallelization for near-linear speedup.
+
 Usage:
     python refusal_circuit_scanner_fast.py -m <model> -o <output_dir> --start <i> --end <j>
     
 For a full sweep (generates heatmaps):
     python refusal_circuit_scanner_fast.py -m <model> -o <output_dir> --sweep
+    
+For multi-GPU sweep:
+    python refusal_circuit_scanner_fast.py -m <model> -o <output_dir> --sweep --num-gpus 4
 """
 
 import argparse
@@ -16,6 +21,7 @@ import gc
 import json
 import os
 import torch
+import multiprocessing as mp
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from utils.data import load_data
@@ -314,11 +320,11 @@ def run_single_scan(
 ) -> dict:
     """
     Run a single scan configuration and return results.
-    
+
     This version applies abliteration on-the-fly without saving/loading models.
     """
     print(f"\n=== Scanning configuration ({start_layer}, {end_layer}) ===")
-    
+
     # Apply abliteration
     apply_ablation_to_model(
         model=model,
@@ -328,16 +334,16 @@ def run_single_scan(
         norm_preserve=norm_preserve,
         projected=projected,
     )
-    
+
     # Evaluate
     print("Evaluating refusal removal...")
     refusal_rate, capability_score = calculate_refusal_score(
         model, tokenizer, harmful_prompts, harmless_prompts, max_tokens=max_tokens
     )
-    
+
     print(f"Refusal rate: {refusal_rate:.2f}%")
     print(f"Capability score: {capability_score:.2f}")
-    
+
     return {
         "start_layer": start_layer,
         "end_layer": end_layer,
@@ -345,6 +351,181 @@ def run_single_scan(
         "capability_score": capability_score,
         "combined_score": refusal_rate - (1 - capability_score) * 50,
     }
+
+
+def run_config_batch_worker(args):
+    """
+    Worker function to run a batch of configurations on a specific GPU.
+    
+    Args:
+        args: Tuple of (config_batch, model_path, measurements_path, harmful_prompts, 
+                       harmless_prompts, gpu_id, norm_preserve, projected, max_tokens, 
+                       flash_attn)
+    
+    Returns:
+        List of results for the batch
+    """
+    (config_batch, model_path, measurements_path, harmful_prompts, 
+     harmless_prompts, gpu_id, norm_preserve, projected, max_tokens, flash_attn) = args
+    
+    # Set device for this worker
+    device = f"cuda:{gpu_id}"
+    torch.cuda.set_device(gpu_id)
+    
+    print(f"[GPU {gpu_id}] Loading model...")
+    
+    # Load measurements
+    measures = torch.load(measurements_path, map_location=device)
+    
+    # Set flash attention implementation
+    attn_impl = "flash_attention_2" if flash_attn else None
+    
+    # Load model on this GPU
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        torch_dtype=torch.float16,
+        device_map=device,
+        attn_implementation=attn_impl,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_path, padding=True)
+    
+    print(f"[GPU {gpu_id}] Model loaded. Processing {len(config_batch)} configurations...")
+    
+    # Save original state
+    state_path = f"/tmp/original_state_gpu{gpu_id}.pt"
+    save_model_state(model, state_path)
+    
+    results = []
+    for idx, (start, end) in enumerate(config_batch):
+        print(f"[GPU {gpu_id}] Config {idx+1}/{len(config_batch)}: ({start}, {end})")
+        
+        # Apply abliteration
+        apply_ablation_to_model(
+            model=model,
+            measures=measures,
+            start_layer=start,
+            end_layer=end,
+            norm_preserve=norm_preserve,
+            projected=projected,
+        )
+        
+        # Evaluate
+        refusal_rate, capability_score = calculate_refusal_score(
+            model, tokenizer, harmful_prompts, harmless_prompts, max_tokens=max_tokens
+        )
+        
+        results.append({
+            "start_layer": start,
+            "end_layer": end,
+            "refusal_rate": refusal_rate,
+            "capability_score": capability_score,
+            "combined_score": refusal_rate - (1 - capability_score) * 50,
+        })
+        
+        # Restore original state
+        restore_model_state(model, state_path)
+    
+    # Cleanup
+    del model, tokenizer, measures
+    torch.cuda.empty_cache()
+    
+    print(f"[GPU {gpu_id}] Completed {len(config_batch)} configurations")
+    return results
+
+
+def run_parallel_sweep(
+    model_path: str,
+    measurements_path: str,
+    harmful_prompts: list,
+    harmless_prompts: list,
+    output_dir: str,
+    num_layers: int,
+    num_gpus: int,
+    norm_preserve: bool = True,
+    projected: bool = True,
+    max_tokens: int = 50,
+    flash_attn: bool = False,
+) -> dict:
+    """
+    Run a full sweep across multiple GPUs in parallel.
+    
+    Each GPU loads its own copy of the model and processes a subset of configurations.
+    Results are collected and merged at the end.
+    
+    Args:
+        model_path: Path to the model
+        measurements_path: Path to measurements file
+        harmful_prompts: List of harmful prompts for testing
+        harmless_prompts: List of harmless prompts for testing
+        output_dir: Directory to save results
+        num_layers: Total number of layers in the model
+        num_gpus: Number of GPUs to use
+        norm_preserve: Whether to use norm-preserving ablation
+        projected: Whether to use projected ablation
+        max_tokens: Max tokens to generate per prompt
+        flash_attn: Whether to use Flash Attention 2
+    
+    Returns:
+        Dictionary of results keyed by (start_layer, end_layer) tuples
+    """
+    # Generate all configurations
+    all_configs = []
+    for start in range(num_layers):
+        for end in range(start + 1, num_layers):
+            all_configs.append((start, end))
+    
+    total_configs = len(all_configs)
+    print(f"Total configurations: {total_configs}")
+    print(f"Distributing across {num_gpus} GPUs")
+    
+    # Split configurations across GPUs
+    configs_per_gpu = (total_configs + num_gpus - 1) // num_gpus
+    gpu_configs = []
+    for gpu_id in range(num_gpus):
+        start_idx = gpu_id * configs_per_gpu
+        end_idx = min(start_idx + configs_per_gpu, total_configs)
+        gpu_configs.append(all_configs[start_idx:end_idx])
+        print(f"GPU {gpu_id}: {len(gpu_configs[-1])} configurations")
+    
+    # Prepare worker arguments
+    worker_args = [
+        (
+            gpu_configs[gpu_id],
+            model_path,
+            measurements_path,
+            harmful_prompts,
+            harmless_prompts,
+            gpu_id,
+            norm_preserve,
+            projected,
+            max_tokens,
+            flash_attn,
+        )
+        for gpu_id in range(num_gpus)
+    ]
+    
+    # Run workers in parallel using multiprocessing
+    print(f"\nStarting parallel sweep with {num_gpus} GPUs...")
+    
+    # Use spawn method for CUDA compatibility
+    mp.set_start_method('spawn', force=True)
+    
+    with mp.Pool(processes=num_gpus) as pool:
+        all_results = pool.map(run_config_batch_worker, worker_args)
+    
+    # Merge results
+    results = {}
+    for gpu_results in all_results:
+        for result in gpu_results:
+            results[(result["start_layer"], result["end_layer"])] = result
+    
+    # Save final results
+    json_results = {f"{k[0]}_{k[1]}": v for k, v in results.items()}
+    with open(os.path.join(output_dir, "sweep_results.json"), "w") as f:
+        json.dump(json_results, f, indent=2)
+    
+    print(f"\nCompleted {total_configs} configurations")
+    return results
 
 
 def run_full_sweep(
@@ -484,6 +665,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size for evaluation")
     parser.add_argument("--max-tokens", type=int, default=50, help="Max tokens to generate per prompt (lower = faster)")
     parser.add_argument("--flash-attn", action="store_true", default=False, help="Use Flash Attention 2")
+    parser.add_argument("--num-gpus", type=int, default=1, help="Number of GPUs for parallel sweep (default: 1)")
     
     args = parser.parse_args()
     
@@ -542,18 +724,42 @@ def main():
         print(f"\n{'='*60}")
         print("STARTING FULL SWEEP")
         print(f"{'='*60}")
-        results = run_full_sweep(
-            model=model,
-            tokenizer=tokenizer,
-            measures=measures,
-            harmful_prompts=harmful_prompts,
-            harmless_prompts=harmless_prompts,
-            output_dir=args.output,
-            num_layers=num_layers,
-            norm_preserve=args.normpreserve,
-            projected=args.projected,
-            max_tokens=args.max_tokens,
-        )
+        
+        if args.num_gpus > 1:
+            # Multi-GPU parallel sweep
+            print(f"Using {args.num_gpus} GPUs for parallel processing")
+            
+            # Free the single-GPU model we loaded earlier
+            del model, tokenizer
+            torch.cuda.empty_cache()
+            
+            results = run_parallel_sweep(
+                model_path=args.model,
+                measurements_path=args.measurements,
+                harmful_prompts=harmful_prompts,
+                harmless_prompts=harmless_prompts,
+                output_dir=args.output,
+                num_layers=num_layers,
+                num_gpus=args.num_gpus,
+                norm_preserve=args.normpreserve,
+                projected=args.projected,
+                max_tokens=args.max_tokens,
+                flash_attn=args.flash_attn,
+            )
+        else:
+            # Single-GPU sweep
+            results = run_full_sweep(
+                model=model,
+                tokenizer=tokenizer,
+                measures=measures,
+                harmful_prompts=harmful_prompts,
+                harmless_prompts=harmless_prompts,
+                output_dir=args.output,
+                num_layers=num_layers,
+                norm_preserve=args.normpreserve,
+                projected=args.projected,
+                max_tokens=args.max_tokens,
+            )
         
         # Generate heatmap visualization
         generate_heatmap_visualization(results, args.output, num_layers)

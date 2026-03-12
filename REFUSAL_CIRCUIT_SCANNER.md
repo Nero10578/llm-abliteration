@@ -19,7 +19,8 @@ A "brain scanner" for identifying refusal circuits in LLMs, inspired by David No
 - Original: ~5-10 minutes per configuration (includes save/load time)
 - Fast (default): ~2-5 minutes per configuration (no save/load overhead)
 - Fast (optimized with flash-attn + max-tokens=10): ~30-60 seconds per configuration
-- For 2,016 configurations: Original ~7-14 days vs Fast ~3-7 days vs Fast (optimized) ~1-2 days
+- Fast (multi-GPU with 4 GPUs): ~4x faster than single GPU
+- For 2,016 configurations: Original ~7-14 days vs Fast ~3-7 days vs Fast (optimized) ~1-2 days vs Fast (multi-GPU 4x optimized) ~6-12 hours
 
 ## Overview
 
@@ -118,6 +119,19 @@ python refusal_circuit_scanner_fast.py \
     --num-layers 64
 ```
 
+#### Multi-GPU Parallel Sweep (4 GPUs)
+```shell
+python refusal_circuit_scanner_fast.py \
+    -m <model_path> \
+    --measurements <measurements_file> \
+    -o <output_dir> \
+    --sweep \
+    --num-layers 64 \
+    --num-gpus 4 \
+    --flash-attn \
+    --max-tokens 10
+```
+
 ### Original Version (Slower)
 
 #### Single Configuration Scan
@@ -158,6 +172,7 @@ python refusal_circuit_scanner.py \
 | `--batch-size` | Batch size for evaluation | 8 |
 | `--max-tokens` | Max tokens to generate per prompt (lower = faster) | 50 |
 | `--flash-attn` | Use Flash Attention 2 for faster inference (CUDA only) | False |
+| `--num-gpus` | Number of GPUs for parallel sweep | 1 |
 
 ## Understanding the Output
 
@@ -309,6 +324,41 @@ python refusal_circuit_scanner_fast.py \
     --num-layers 64 \
     --max-tokens 50
 ```
+
+### Multi-GPU Parallelization
+
+The fast version supports multi-GPU parallelization for near-linear speedup:
+
+- **2 GPUs**: ~2x faster
+- **4 GPUs**: ~4x faster
+- **8 GPUs**: ~8x faster
+
+Each GPU loads its own copy of the model and processes a subset of configurations independently. Results are collected and merged at the end.
+
+**Requirements:**
+- Multiple GPUs with sufficient VRAM (each GPU needs to fit the full model)
+- PyTorch with CUDA support
+- Multiprocessing spawn method (handled automatically)
+
+**Example:**
+```shell
+# 4-GPU parallel sweep with all optimizations
+python refusal_circuit_scanner_fast.py \
+    -m Qwen/Qwen2.5-27B-Instruct \
+    --measurements measurements.pt \
+    -o scanner_results \
+    --sweep \
+    --num-layers 64 \
+    --num-gpus 4 \
+    --flash-attn \
+    --max-tokens 10
+```
+
+**Expected time for 2,016 configurations (64-layer model):**
+- Single GPU (default): ~3-7 days
+- Single GPU (optimized): ~1-2 days
+- 4 GPUs (optimized): ~6-12 hours
+- 8 GPUs (optimized): ~3-6 hours
 
 ### Recommended Approach
 
