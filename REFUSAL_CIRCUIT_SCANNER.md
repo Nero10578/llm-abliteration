@@ -200,10 +200,21 @@ python refusal_circuit_scanner_fast.py \
 
 #### Source Layer (`--source-layer`)
 
-By default, the scanner auto-detects the best source layer for the refusal direction by selecting the highest layer number available in the measurements. You can override this with `--source-layer`:
+By default, the scanner auto-detects the best source layer for the refusal direction by calculating **signal quality** for each layer and selecting the one with the highest score. The signal quality formula (same as `analyze.py`) is:
 
-- **Auto-detect (default)**: Uses the highest layer number from measurements
-- **`--source-layer 30`**: Uses layer 30's refusal direction for all ablations
+```
+signal_quality = snr * (1 - cos_sim) * purity_ratio
+```
+
+Where:
+- `snr` = refusal_direction_norm / max(harmful_norm, harmless_norm)
+- `cos_sim` = cosine similarity between harmful and harmless means
+- `purity_ratio` = orthogonalized refusal direction norm / refusal direction norm
+
+You can override the auto-detection with `--source-layer`:
+
+- **Auto-detect (default)**: Uses the layer with highest signal quality
+- **`--source-layer 54`**: Uses layer 54's refusal direction for all ablations
 
 This is useful when:
 - You want to test different source layers systematically
@@ -218,7 +229,7 @@ python refusal_circuit_scanner_fast.py \
     -o scanner_results \
     --sweep \
     --num-layers 64 \
-    --source-layer 35
+    --source-layer 54
 ```
 
 ## Understanding the Output

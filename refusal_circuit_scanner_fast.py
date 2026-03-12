@@ -53,7 +53,7 @@ def apply_ablation_to_model(
         projected: Whether to use projected ablation
         scale: Scale factor for ablation (default 1.0)
         sparsity: Sparsity fraction for magnitude sparsification
-        source_layer: Layer to use as refusal direction source (default: auto-detect highest)
+        source_layer: Layer to use as refusal direction source (default: auto-detect best signal quality)
     """
     from sharded_ablate import modify_tensor, modify_tensor_norm_preserved, magnitude_sparsify
     
@@ -61,15 +61,50 @@ def apply_ablation_to_model(
     if source_layer is not None:
         best_source = source_layer
     else:
-        # Auto-detect: use highest layer number as heuristic
+        # Auto-detect: find layer with best signal quality
+        # Signal quality = snr * (1 - cos_sim) * purity_ratio
         best_source = None
-        best_score = -1
+        best_quality = -1
         
         for key in measures.keys():
             if key.startswith('refuse_'):
                 layer_num = int(key.split('_')[1])
-                if layer_num > best_score:
-                    best_score = layer_num
+                
+                # Get the measurements for this layer
+                refusal_dir = measures[f'refuse_{layer_num}']
+                harmful_mean = measures.get(f'harmful_{layer_num}')
+                harmless_mean = measures.get(f'harmless_{layer_num}')
+                
+                if harmful_mean is None or harmless_mean is None:
+                    continue
+                
+                # Calculate signal quality (same formula as analyze.py)
+                harmful_norm = harmful_mean.norm().item()
+                harmless_norm = harmless_mean.norm().item()
+                refusal_norm = refusal_dir.norm().item()
+                
+                # Signal-to-noise ratio
+                snr = refusal_norm / max(harmful_norm, harmless_norm)
+                
+                # Cosine similarity between harmful and harmless
+                cos_sim = torch.nn.functional.cosine_similarity(
+                    harmful_mean.float(), harmless_mean.float(), dim=0
+                ).item()
+                
+                # Refusal purity ratio
+                harmless_normalized = harmless_mean / harmless_mean.norm()
+                projection = (refusal_dir @ harmless_normalized) * harmless_normalized
+                refusal_orth = refusal_dir - projection
+                if refusal_dir.norm() > 0:
+                    purity_ratio = refusal_orth.norm() / refusal_dir.norm()
+                else:
+                    purity_ratio = 0
+                
+                # Signal quality
+                quality = snr * (1 - cos_sim) * purity_ratio
+                
+                if quality > best_quality:
+                    best_quality = quality
                     best_source = layer_num
         
         if best_source is None:
