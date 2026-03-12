@@ -37,27 +37,43 @@ def apply_ablation_to_model(
     projected: bool = True,
     scale: float = 1.0,
     sparsity: float = 0.0,
+    source_layer: int = None,
 ):
     """
     Apply abliteration to model weights in-place (on-the-fly).
     
     This modifies the model's weights directly without saving to disk.
+    
+    Args:
+        model: The model to modify
+        measures: Dictionary of measurements from measure.py
+        start_layer: First layer to ablate
+        end_layer: Last layer to ablate (inclusive)
+        norm_preserve: Whether to use norm-preserving ablation
+        projected: Whether to use projected ablation
+        scale: Scale factor for ablation (default 1.0)
+        sparsity: Sparsity fraction for magnitude sparsification
+        source_layer: Layer to use as refusal direction source (default: auto-detect highest)
     """
     from sharded_ablate import modify_tensor, modify_tensor_norm_preserved, magnitude_sparsify
     
-    # Find best measurement source (highest layer number as heuristic)
-    best_source = None
-    best_score = -1
-    
-    for key in measures.keys():
-        if key.startswith('refuse_'):
-            layer_num = int(key.split('_')[1])
-            if layer_num > best_score:
-                best_score = layer_num
-                best_source = layer_num
-    
-    if best_source is None:
-        raise ValueError("No refusal measurements found")
+    # Determine source layer for refusal direction
+    if source_layer is not None:
+        best_source = source_layer
+    else:
+        # Auto-detect: use highest layer number as heuristic
+        best_source = None
+        best_score = -1
+        
+        for key in measures.keys():
+            if key.startswith('refuse_'):
+                layer_num = int(key.split('_')[1])
+                if layer_num > best_score:
+                    best_score = layer_num
+                    best_source = layer_num
+        
+        if best_source is None:
+            raise ValueError("No refusal measurements found")
     
     # Get the model's layer structure
     if hasattr(model, 'language_model'):
@@ -139,7 +155,7 @@ def apply_ablation_to_model(
         del refusal_dir, harmless_dir
         clear_device_cache()
     
-    print(f"Applied abliteration to layers {start_layer}-{end_layer} using measurement from layer {best_source}")
+    print(f"Applied abliteration to layers {start_layer}-{end_layer} using measurement from layer {best_source} with scale {scale}")
 
 
 def calculate_refusal_score(model, tokenizer, harmful_prompts, harmless_prompts, batch_size=8, max_tokens=50):
@@ -317,6 +333,8 @@ def run_single_scan(
     norm_preserve: bool = True,
     projected: bool = True,
     max_tokens: int = 50,
+    scale: float = 1.0,
+    source_layer: int = None,
 ) -> dict:
     """
     Run a single scan configuration and return results.
@@ -333,6 +351,8 @@ def run_single_scan(
         end_layer=end_layer,
         norm_preserve=norm_preserve,
         projected=projected,
+        scale=scale,
+        source_layer=source_layer,
     )
 
     # Evaluate
@@ -360,13 +380,14 @@ def run_config_batch_worker(args):
     Args:
         args: Tuple of (config_batch, model_path, measurements_path, harmful_prompts, 
                        harmless_prompts, gpu_id, norm_preserve, projected, max_tokens, 
-                       flash_attn)
+                       flash_attn, scale, source_layer)
     
     Returns:
         List of results for the batch
     """
     (config_batch, model_path, measurements_path, harmful_prompts, 
-     harmless_prompts, gpu_id, norm_preserve, projected, max_tokens, flash_attn) = args
+     harmless_prompts, gpu_id, norm_preserve, projected, max_tokens, 
+     flash_attn, scale, source_layer) = args
     
     # Set device for this worker
     device = f"cuda:{gpu_id}"
@@ -407,6 +428,8 @@ def run_config_batch_worker(args):
             end_layer=end,
             norm_preserve=norm_preserve,
             projected=projected,
+            scale=scale,
+            source_layer=source_layer,
         )
         
         # Evaluate
@@ -445,6 +468,8 @@ def run_parallel_sweep(
     projected: bool = True,
     max_tokens: int = 50,
     flash_attn: bool = False,
+    scale: float = 1.0,
+    source_layer: int = None,
 ) -> dict:
     """
     Run a full sweep across multiple GPUs in parallel.
@@ -464,6 +489,8 @@ def run_parallel_sweep(
         projected: Whether to use projected ablation
         max_tokens: Max tokens to generate per prompt
         flash_attn: Whether to use Flash Attention 2
+        scale: Scale factor for ablation
+        source_layer: Layer to use as refusal direction source (None = auto-detect)
     
     Returns:
         Dictionary of results keyed by (start_layer, end_layer) tuples
@@ -500,6 +527,8 @@ def run_parallel_sweep(
             projected,
             max_tokens,
             flash_attn,
+            scale,
+            source_layer,
         )
         for gpu_id in range(num_gpus)
     ]
@@ -539,6 +568,8 @@ def run_full_sweep(
     norm_preserve: bool = True,
     projected: bool = True,
     max_tokens: int = 50,
+    scale: float = 1.0,
+    source_layer: int = None,
 ) -> dict:
     """
     Run a full sweep of all layer configurations.
@@ -576,6 +607,8 @@ def run_full_sweep(
                 norm_preserve=norm_preserve,
                 projected=projected,
                 max_tokens=max_tokens,
+                scale=scale,
+                source_layer=source_layer,
             )
             
             results[(start, end)] = result
@@ -666,6 +699,8 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=50, help="Max tokens to generate per prompt (lower = faster)")
     parser.add_argument("--flash-attn", action="store_true", default=False, help="Use Flash Attention 2")
     parser.add_argument("--num-gpus", type=int, default=1, help="Number of GPUs for parallel sweep (default: 1)")
+    parser.add_argument("--scale", type=float, default=1.0, help="Scale factor for ablation (default: 1.0)")
+    parser.add_argument("--source-layer", type=int, default=None, help="Layer to use as refusal direction source (default: auto-detect highest layer)")
     
     args = parser.parse_args()
     
@@ -745,6 +780,8 @@ def main():
                 projected=args.projected,
                 max_tokens=args.max_tokens,
                 flash_attn=args.flash_attn,
+                scale=args.scale,
+                source_layer=args.source_layer,
             )
         else:
             # Single-GPU sweep
@@ -759,6 +796,8 @@ def main():
                 norm_preserve=args.normpreserve,
                 projected=args.projected,
                 max_tokens=args.max_tokens,
+                scale=args.scale,
+                source_layer=args.source_layer,
             )
         
         # Generate heatmap visualization
@@ -777,6 +816,8 @@ def main():
             norm_preserve=args.normpreserve,
             projected=args.projected,
             max_tokens=args.max_tokens,
+            scale=args.scale,
+            source_layer=args.source_layer,
         )
         
         print(f"\n{'='*60}")

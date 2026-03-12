@@ -173,6 +173,53 @@ python refusal_circuit_scanner.py \
 | `--max-tokens` | Max tokens to generate per prompt (lower = faster) | 50 |
 | `--flash-attn` | Use Flash Attention 2 for faster inference (CUDA only) | False |
 | `--num-gpus` | Number of GPUs for parallel sweep | 1 |
+| `--scale` | Scale factor for ablation | 1.0 |
+| `--source-layer` | Layer to use as refusal direction source (None = auto-detect) | None |
+
+### Advanced Options
+
+#### Scale Factor (`--scale`)
+
+The scale factor controls the intensity of the ablation:
+
+- **`--scale 1.0`** (default): Standard ablation intensity
+- **`--scale 0.5`**: Gentler ablation, may preserve more capabilities but less effective refusal removal
+- **`--scale 1.5`**: More aggressive ablation, may remove more refusals but risk capability degradation
+- **`--scale 2.0`**: Very aggressive, useful for models with strong refusal training
+
+Example:
+```shell
+python refusal_circuit_scanner_fast.py \
+    -m <model> \
+    --measurements measurements.pt \
+    -o scanner_results \
+    --sweep \
+    --num-layers 64 \
+    --scale 1.5
+```
+
+#### Source Layer (`--source-layer`)
+
+By default, the scanner auto-detects the best source layer for the refusal direction by selecting the highest layer number available in the measurements. You can override this with `--source-layer`:
+
+- **Auto-detect (default)**: Uses the highest layer number from measurements
+- **`--source-layer 30`**: Uses layer 30's refusal direction for all ablations
+
+This is useful when:
+- You want to test different source layers systematically
+- Analysis shows a specific layer has a better refusal direction
+- You want to compare results across different source layers
+
+Example:
+```shell
+python refusal_circuit_scanner_fast.py \
+    -m <model> \
+    --measurements measurements.pt \
+    -o scanner_results \
+    --sweep \
+    --num-layers 64 \
+    --source-layer 35
+```
 
 ## Understanding the Output
 
