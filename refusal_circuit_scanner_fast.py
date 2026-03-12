@@ -468,9 +468,13 @@ def run_config_batch_worker(args):
         )
         
         # Evaluate
+        print(f"[GPU {gpu_id}] Evaluating refusal removal...")
         refusal_rate, capability_score = calculate_refusal_score(
             model, tokenizer, harmful_prompts, harmless_prompts, max_tokens=max_tokens
         )
+        
+        print(f"[GPU {gpu_id}] Refusal rate: {refusal_rate:.2f}%")
+        print(f"[GPU {gpu_id}] Capability score: {capability_score:.2f}")
         
         results.append({
             "start_layer": start,
@@ -764,8 +768,8 @@ def main():
         harmless_prompts = load_data("./data/harmless.parquet")
     
     # Limit prompts for faster scanning
-    harmful_prompts = harmful_prompts[:20]
-    harmless_prompts = harmless_prompts[:20]
+    harmful_prompts = harmful_prompts[:100]
+    harmless_prompts = harmless_prompts[:100]
     
     print(f"Using {len(harmful_prompts)} harmful prompts and {len(harmless_prompts)} harmless prompts")
     
