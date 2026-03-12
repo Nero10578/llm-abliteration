@@ -28,16 +28,68 @@ from utils.data import load_data
 from utils.device import clear_device_cache, get_preferred_device, synchronize_device
 
 
+def get_best_source_layer(measures: dict) -> int:
+    """Auto-detect the layer with the best refusal signal quality."""
+    best_source = None
+    best_quality = -1
+    
+    for key in measures.keys():
+        if key.startswith('refuse_'):
+            layer_num = int(key.split('_')[1])
+            
+            # Get the measurements for this layer
+            refusal_dir = measures[f'refuse_{layer_num}']
+            harmful_mean = measures.get(f'harmful_{layer_num}')
+            harmless_mean = measures.get(f'harmless_{layer_num}')
+            
+            if harmful_mean is None or harmless_mean is None:
+                continue
+            
+            # Calculate signal quality (same formula as analyze.py)
+            harmful_norm = harmful_mean.norm().item()
+            harmless_norm = harmless_mean.norm().item()
+            refusal_norm = refusal_dir.norm().item()
+            
+            # Signal-to-noise ratio
+            snr = refusal_norm / max(harmful_norm, harmless_norm)
+            
+            # Cosine similarity between harmful and harmless
+            cos_sim = torch.nn.functional.cosine_similarity(
+                harmful_mean.float(), harmless_mean.float(), dim=0
+            ).item()
+            
+            # Refusal purity ratio
+            harmless_normalized = harmless_mean / harmless_mean.norm()
+            projection = (refusal_dir @ harmless_normalized) * harmless_normalized
+            refusal_orth = refusal_dir - projection
+            if refusal_dir.norm() > 0:
+                purity_ratio = refusal_orth.norm() / refusal_dir.norm()
+            else:
+                purity_ratio = 0
+            
+            # Signal quality
+            quality = snr * (1 - cos_sim) * purity_ratio
+            
+            if quality > best_quality:
+                best_quality = quality
+                best_source = layer_num
+    
+    if best_source is None:
+        raise ValueError("No refusal measurements found")
+        
+    return best_source
+
+
 def apply_ablation_to_model(
     model,
     measures: dict,
     start_layer: int,
     end_layer: int,
+    source_layer: int,
     norm_preserve: bool = True,
     projected: bool = True,
     scale: float = 1.0,
     sparsity: float = 0.0,
-    source_layer: int = None,
 ):
     """
     Apply abliteration to model weights in-place (on-the-fly).
@@ -49,66 +101,13 @@ def apply_ablation_to_model(
         measures: Dictionary of measurements from measure.py
         start_layer: First layer to ablate
         end_layer: Last layer to ablate (inclusive)
+        source_layer: Layer to use as refusal direction source
         norm_preserve: Whether to use norm-preserving ablation
         projected: Whether to use projected ablation
         scale: Scale factor for ablation (default 1.0)
         sparsity: Sparsity fraction for magnitude sparsification
-        source_layer: Layer to use as refusal direction source (default: auto-detect best signal quality)
     """
     from sharded_ablate import modify_tensor, modify_tensor_norm_preserved, magnitude_sparsify
-    
-    # Determine source layer for refusal direction
-    if source_layer is not None:
-        best_source = source_layer
-    else:
-        # Auto-detect: find layer with best signal quality
-        # Signal quality = snr * (1 - cos_sim) * purity_ratio
-        best_source = None
-        best_quality = -1
-        
-        for key in measures.keys():
-            if key.startswith('refuse_'):
-                layer_num = int(key.split('_')[1])
-                
-                # Get the measurements for this layer
-                refusal_dir = measures[f'refuse_{layer_num}']
-                harmful_mean = measures.get(f'harmful_{layer_num}')
-                harmless_mean = measures.get(f'harmless_{layer_num}')
-                
-                if harmful_mean is None or harmless_mean is None:
-                    continue
-                
-                # Calculate signal quality (same formula as analyze.py)
-                harmful_norm = harmful_mean.norm().item()
-                harmless_norm = harmless_mean.norm().item()
-                refusal_norm = refusal_dir.norm().item()
-                
-                # Signal-to-noise ratio
-                snr = refusal_norm / max(harmful_norm, harmless_norm)
-                
-                # Cosine similarity between harmful and harmless
-                cos_sim = torch.nn.functional.cosine_similarity(
-                    harmful_mean.float(), harmless_mean.float(), dim=0
-                ).item()
-                
-                # Refusal purity ratio
-                harmless_normalized = harmless_mean / harmless_mean.norm()
-                projection = (refusal_dir @ harmless_normalized) * harmless_normalized
-                refusal_orth = refusal_dir - projection
-                if refusal_dir.norm() > 0:
-                    purity_ratio = refusal_orth.norm() / refusal_dir.norm()
-                else:
-                    purity_ratio = 0
-                
-                # Signal quality
-                quality = snr * (1 - cos_sim) * purity_ratio
-                
-                if quality > best_quality:
-                    best_quality = quality
-                    best_source = layer_num
-        
-        if best_source is None:
-            raise ValueError("No refusal measurements found")
     
     # Get the model's layer structure
     if hasattr(model, 'language_model'):
@@ -123,7 +122,7 @@ def apply_ablation_to_model(
         layer = layer_base.layers[layer_idx]
         
         # Get refusal direction for this layer
-        refusal_dir = measures[f'refuse_{best_source}'].float()
+        refusal_dir = measures[f'refuse_{source_layer}'].float()
         harmless_dir = measures[f'harmless_{layer_idx}'].float()
         
         if projected:
@@ -188,9 +187,8 @@ def apply_ablation_to_model(
         
         # Clean up
         del refusal_dir, harmless_dir
-        clear_device_cache()
     
-    print(f"Applied abliteration to layers {start_layer}-{end_layer} using measurement from layer {best_source} with scale {scale}")
+    print(f"Applied abliteration to layers {start_layer}-{end_layer} using measurement from layer {source_layer} with scale {scale}")
 
 
 def pre_tokenize_prompts(tokenizer, prompts, batch_size=8):
@@ -249,8 +247,6 @@ def calculate_refusal_score(model, tokenizer, harmful_batches, harmless_batches,
             response_lower = response.lower()
             if any(keyword in response_lower for keyword in refusal_keywords):
                 refusals += 1
-        
-        clear_device_cache()
     
     refusal_rate = (refusals / total_harmful) * 100 if total_harmful > 0 else 0
     
@@ -278,16 +274,14 @@ def calculate_refusal_score(model, tokenizer, harmful_batches, harmless_batches,
                 capability_scores.append(0.5)
             else:
                 capability_scores.append(0.0)
-        
-        clear_device_cache()
     
     capability_score = sum(capability_scores) / len(capability_scores) if capability_scores else 0
     
     return refusal_rate, capability_score
 
 
-def save_model_state(model, state_path):
-    """Save the current state of model weights."""
+def get_model_state_backup(model, start_layer, end_layer):
+    """Get a backup of model weights for the specified layers in CPU memory."""
     state = {}
     if hasattr(model, 'language_model'):
         layer_base = model.language_model.model
@@ -296,29 +290,27 @@ def save_model_state(model, state_path):
         if hasattr(layer_base, 'language_model'):
             layer_base = layer_base.language_model
     
-    for idx, layer in enumerate(layer_base.layers):
+    for idx in range(start_layer, end_layer + 1):
+        layer = layer_base.layers[idx]
         # Handle different attention architectures
-        # Qwen3.5 has conditional self_attn based on layer_type
         if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'o_proj'):
-            state[f'layer_{idx}_self_attn_o_proj'] = layer.self_attn.o_proj.weight.data.clone()
+            state[f'layer_{idx}_self_attn_o_proj'] = layer.self_attn.o_proj.weight.data.cpu().clone()
         
         # Handle linear attention (Qwen3.5 specific)
         if hasattr(layer, 'linear_attn') and hasattr(layer.linear_attn, 'out_proj'):
-            state[f'layer_{idx}_linear_attn_out_proj'] = layer.linear_attn.out_proj.weight.data.clone()
+            state[f'layer_{idx}_linear_attn_out_proj'] = layer.linear_attn.out_proj.weight.data.cpu().clone()
         
         # Handle different MLP architectures
         if hasattr(layer, 'mlp') and hasattr(layer.mlp, 'down_proj'):
-            state[f'layer_{idx}_mlp_down_proj'] = layer.mlp.down_proj.weight.data.clone()
+            state[f'layer_{idx}_mlp_down_proj'] = layer.mlp.down_proj.weight.data.cpu().clone()
         elif hasattr(layer, 'ffn') and hasattr(layer.ffn, 'down_proj'):
-            state[f'layer_{idx}_ffn_down_proj'] = layer.ffn.down_proj.weight.data.clone()
+            state[f'layer_{idx}_ffn_down_proj'] = layer.ffn.down_proj.weight.data.cpu().clone()
     
-    torch.save(state, state_path)
+    return state
 
 
-def restore_model_state(model, state_path):
+def restore_model_state(model, state):
     """Restore model weights from saved state."""
-    state = torch.load(state_path)
-    
     if hasattr(model, 'language_model'):
         layer_base = model.language_model.model
     else:
@@ -331,22 +323,22 @@ def restore_model_state(model, state_path):
             layer_idx = int(key.split('_')[1])
             if hasattr(layer_base.layers[layer_idx], 'self_attn') and hasattr(layer_base.layers[layer_idx].self_attn, 'o_proj'):
                 with torch.no_grad():
-                    layer_base.layers[layer_idx].self_attn.o_proj.weight.copy_(weight)
+                    layer_base.layers[layer_idx].self_attn.o_proj.weight.copy_(weight.to(layer_base.layers[layer_idx].self_attn.o_proj.weight.device))
         elif 'linear_attn_out_proj' in key:
             layer_idx = int(key.split('_')[1])
             if hasattr(layer_base.layers[layer_idx], 'linear_attn') and hasattr(layer_base.layers[layer_idx].linear_attn, 'out_proj'):
                 with torch.no_grad():
-                    layer_base.layers[layer_idx].linear_attn.out_proj.weight.copy_(weight)
+                    layer_base.layers[layer_idx].linear_attn.out_proj.weight.copy_(weight.to(layer_base.layers[layer_idx].linear_attn.out_proj.weight.device))
         elif 'mlp_down_proj' in key:
             layer_idx = int(key.split('_')[1])
             if hasattr(layer_base.layers[layer_idx], 'mlp') and hasattr(layer_base.layers[layer_idx].mlp, 'down_proj'):
                 with torch.no_grad():
-                    layer_base.layers[layer_idx].mlp.down_proj.weight.copy_(weight)
+                    layer_base.layers[layer_idx].mlp.down_proj.weight.copy_(weight.to(layer_base.layers[layer_idx].mlp.down_proj.weight.device))
         elif 'ffn_down_proj' in key:
             layer_idx = int(key.split('_')[1])
             if hasattr(layer_base.layers[layer_idx], 'ffn') and hasattr(layer_base.layers[layer_idx].ffn, 'down_proj'):
                 with torch.no_grad():
-                    layer_base.layers[layer_idx].ffn.down_proj.weight.copy_(weight)
+                    layer_base.layers[layer_idx].ffn.down_proj.weight.copy_(weight.to(layer_base.layers[layer_idx].ffn.down_proj.weight.device))
     
     print("Restored model to original state")
 
@@ -441,13 +433,12 @@ def run_config_batch_worker(args):
     
     print(f"[GPU {gpu_id}] Model loaded. Processing {len(config_batch)} configurations...")
     
-    # Save original state
-    state_path = f"/tmp/original_state_gpu{gpu_id}.pt"
-    save_model_state(model, state_path)
-    
     results = []
     for idx, (start, end) in enumerate(config_batch):
         print(f"[GPU {gpu_id}] Config {idx+1}/{len(config_batch)}: ({start}, {end})")
+        
+        # Save original state for the layers we are about to modify
+        state = get_model_state_backup(model, start, end)
         
         # Apply abliteration
         apply_ablation_to_model(
@@ -479,7 +470,7 @@ def run_config_batch_worker(args):
         })
         
         # Restore original state
-        restore_model_state(model, state_path)
+        restore_model_state(model, state)
     
     # Cleanup
     del model, tokenizer, measures
@@ -611,11 +602,6 @@ def run_full_sweep(
     """
     results = {}
     
-    # Save original model state
-    original_state_path = os.path.join(output_dir, "original_model_state.pt")
-    print("Saving original model state...")
-    save_model_state(model, original_state_path)
-    
     # Sweep all valid (i, j) pairs where i < j
     total_configs = num_layers * (num_layers - 1) // 2
     print(f"Running full sweep: {total_configs} configurations")
@@ -627,6 +613,9 @@ def run_full_sweep(
             print(f"\n{'='*60}")
             print(f"Configuration {config_index}/{total_configs}: ({start}, {end})")
             print(f"{'='*60}")
+            
+            # Save original state for the layers we are about to modify
+            state = get_model_state_backup(model, start, end)
             
             # Run scan
             result = run_single_scan(
@@ -647,7 +636,7 @@ def run_full_sweep(
             results[(start, end)] = result
             
             # Restore original state before next iteration
-            restore_model_state(model, original_state_path)
+            restore_model_state(model, state)
             
             # Save intermediate results (convert tuple keys to strings for JSON)
             json_results = {f"{k[0]}_{k[1]}": v for k, v in results.items()}
@@ -776,51 +765,65 @@ def main():
     if attn_impl:
         print("Using Flash Attention 2 for faster inference")
     
-    # Load model ONCE (this is the key optimization)
-    print(f"Loading model {args.model}...")
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        torch_dtype=torch.float16,
-        device_map=device,
-        attn_implementation=attn_impl,
-    )
+    # We need the tokenizer to pre-tokenize prompts
+    print(f"Loading tokenizer {args.model}...")
     tokenizer = AutoTokenizer.from_pretrained(args.model, padding=True)
-    print("Model loaded successfully")
     
     print("Pre-tokenizing prompts...")
     harmful_batches = pre_tokenize_prompts(tokenizer, harmful_prompts, args.batch_size)
     harmless_batches = pre_tokenize_prompts(tokenizer, harmless_prompts, args.batch_size)
     
-    if args.sweep:
-        # Run full sweep
+    # Determine source layer once
+    if args.source_layer is not None:
+        source_layer = args.source_layer
+        print(f"Using specified source layer: {source_layer}")
+    else:
+        print("Auto-detecting best source layer...")
+        source_layer = get_best_source_layer(measures)
+        print(f"Auto-detected best source layer: {source_layer}")
+    
+    if args.sweep and args.num_gpus > 1:
+        # Multi-GPU parallel sweep
         print(f"\n{'='*60}")
         print("STARTING FULL SWEEP")
         print(f"{'='*60}")
+        print(f"Using {args.num_gpus} GPUs for parallel processing")
         
-        if args.num_gpus > 1:
-            # Multi-GPU parallel sweep
-            print(f"Using {args.num_gpus} GPUs for parallel processing")
+        results = run_parallel_sweep(
+            model_path=args.model,
+            measurements_path=args.measurements,
+            harmful_batches=harmful_batches,
+            harmless_batches=harmless_batches,
+            output_dir=args.output,
+            num_layers=num_layers,
+            num_gpus=args.num_gpus,
+            norm_preserve=args.normpreserve,
+            projected=args.projected,
+            max_tokens=args.max_tokens,
+            flash_attn=args.flash_attn,
+            scale=args.scale,
+            source_layer=source_layer,
+        )
+        
+        # Generate heatmap visualization
+        generate_heatmap_visualization(results, args.output, num_layers)
+    else:
+        # Load model ONCE (this is the key optimization)
+        print(f"Loading model {args.model}...")
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model,
+            torch_dtype=torch.float16,
+            device_map=device,
+            attn_implementation=attn_impl,
+        )
+        print("Model loaded successfully")
+        
+        if args.sweep:
+            # Run full sweep
+            print(f"\n{'='*60}")
+            print("STARTING FULL SWEEP")
+            print(f"{'='*60}")
             
-            # Free the single-GPU model we loaded earlier
-            del model, tokenizer
-            torch.cuda.empty_cache()
-            
-            results = run_parallel_sweep(
-                model_path=args.model,
-                measurements_path=args.measurements,
-                harmful_batches=harmful_batches,
-                harmless_batches=harmless_batches,
-                output_dir=args.output,
-                num_layers=num_layers,
-                num_gpus=args.num_gpus,
-                norm_preserve=args.normpreserve,
-                projected=args.projected,
-                max_tokens=args.max_tokens,
-                flash_attn=args.flash_attn,
-                scale=args.scale,
-                source_layer=args.source_layer,
-            )
-        else:
             # Single-GPU sweep
             results = run_full_sweep(
                 model=model,
@@ -834,45 +837,45 @@ def main():
                 projected=args.projected,
                 max_tokens=args.max_tokens,
                 scale=args.scale,
-                source_layer=args.source_layer,
+                source_layer=source_layer,
             )
+            
+            # Generate heatmap visualization
+            generate_heatmap_visualization(results, args.output, num_layers)
+            
+        elif args.start is not None and args.end is not None:
+            # Run single scan
+            result = run_single_scan(
+                model=model,
+                tokenizer=tokenizer,
+                measures=measures,
+                start_layer=args.start,
+                end_layer=args.end,
+                harmful_batches=harmful_batches,
+                harmless_batches=harmless_batches,
+                norm_preserve=args.normpreserve,
+                projected=args.projected,
+                max_tokens=args.max_tokens,
+                scale=args.scale,
+                source_layer=source_layer,
+            )
+            
+            print(f"\n{'='*60}")
+            print("SCAN RESULTS")
+            print(f"{'='*60}")
+            print(f"Layers: {result['start_layer']} to {result['end_layer']}")
+            print(f"Refusal rate: {result['refusal_rate']:.2f}%")
+            print(f"Capability score: {result['capability_score']:.2f}")
+            print(f"Combined score: {result['combined_score']:.2f}")
+            print(f"{'='*60}")
+            
+            # Save result
+            with open(os.path.join(args.output, "scan_result.json"), "w") as f:
+                json.dump(result, f, indent=2)
         
-        # Generate heatmap visualization
-        generate_heatmap_visualization(results, args.output, num_layers)
-        
-    elif args.start is not None and args.end is not None:
-        # Run single scan
-        result = run_single_scan(
-            model=model,
-            tokenizer=tokenizer,
-            measures=measures,
-            start_layer=args.start,
-            end_layer=args.end,
-            harmful_batches=harmful_batches,
-            harmless_batches=harmless_batches,
-            norm_preserve=args.normpreserve,
-            projected=args.projected,
-            max_tokens=args.max_tokens,
-            scale=args.scale,
-            source_layer=args.source_layer,
-        )
-        
-        print(f"\n{'='*60}")
-        print("SCAN RESULTS")
-        print(f"{'='*60}")
-        print(f"Layers: {result['start_layer']} to {result['end_layer']}")
-        print(f"Refusal rate: {result['refusal_rate']:.2f}%")
-        print(f"Capability score: {result['capability_score']:.2f}")
-        print(f"Combined score: {result['combined_score']:.2f}")
-        print(f"{'='*60}")
-        
-        # Save result
-        with open(os.path.join(args.output, "scan_result.json"), "w") as f:
-            json.dump(result, f, indent=2)
-    
-    else:
-        print("Error: Specify either --sweep or both --start and --end")
-        parser.print_help()
+        else:
+            print("Error: Specify either --sweep or both --start and --end")
+            parser.print_help()
 
 
 if __name__ == "__main__":
