@@ -17,8 +17,9 @@ A "brain scanner" for identifying refusal circuits in LLMs, inspired by David No
 
 **Performance Comparison:**
 - Original: ~5-10 minutes per configuration (includes save/load time)
-- Fast: ~2-5 minutes per configuration (no save/load overhead)
-- For 2,016 configurations: Original ~7-14 days vs Fast ~3-7 days
+- Fast (default): ~2-5 minutes per configuration (no save/load overhead)
+- Fast (optimized with flash-attn + max-tokens=10): ~30-60 seconds per configuration
+- For 2,016 configurations: Original ~7-14 days vs Fast ~3-7 days vs Fast (optimized) ~1-2 days
 
 ## Overview
 
@@ -155,6 +156,8 @@ python refusal_circuit_scanner.py \
 | `--normpreserve` | Use norm-preserving ablation | True |
 | `--projected` | Use projected ablation | True |
 | `--batch-size` | Batch size for evaluation | 8 |
+| `--max-tokens` | Max tokens to generate per prompt (lower = faster) | 50 |
+| `--flash-attn` | Use Flash Attention 2 for faster inference (CUDA only) | False |
 
 ## Understanding the Output
 
@@ -268,6 +271,44 @@ A full sweep of all layer configurations is computationally expensive:
 2. **Limited prompts**: Use fewer prompts for faster scanning
 3. **Parallel processing**: Run multiple configurations on different GPUs
 4. **Incremental approach**: Start with promising ranges from analyze.py
+5. **Flash Attention 2**: Use `--flash-attn` for 2-3x faster inference (CUDA only)
+6. **Reduce token generation**: Use `--max-tokens 10` for 5x faster scanning (default is 50)
+
+### Performance Optimization Examples
+
+**Fastest scanning (for quick exploration):**
+```shell
+python refusal_circuit_scanner_fast.py \
+    -m <model> \
+    --measurements measurements.pt \
+    -o scanner_results \
+    --sweep \
+    --num-layers 64 \
+    --flash-attn \
+    --max-tokens 10
+```
+
+**Balanced speed/accuracy (recommended):**
+```shell
+python refusal_circuit_scanner_fast.py \
+    -m <model> \
+    --measurements measurements.pt \
+    -o scanner_results \
+    --sweep \
+    --num-layers 64 \
+    --max-tokens 20
+```
+
+**Maximum accuracy (slower):**
+```shell
+python refusal_circuit_scanner_fast.py \
+    -m <model> \
+    --measurements measurements.pt \
+    -o scanner_results \
+    --sweep \
+    --num-layers 64 \
+    --max-tokens 50
+```
 
 ### Recommended Approach
 

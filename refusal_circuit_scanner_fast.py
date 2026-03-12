@@ -136,7 +136,7 @@ def apply_ablation_to_model(
     print(f"Applied abliteration to layers {start_layer}-{end_layer} using measurement from layer {best_source}")
 
 
-def calculate_refusal_score(model, tokenizer, harmful_prompts, harmless_prompts, batch_size=8):
+def calculate_refusal_score(model, tokenizer, harmful_prompts, harmless_prompts, batch_size=8, max_tokens=50):
     """
     Calculate refusal score: lower is better (fewer refusals).
     
@@ -174,7 +174,7 @@ def calculate_refusal_score(model, tokenizer, harmful_prompts, harmless_prompts,
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=50,
+                max_new_tokens=max_tokens,
                 do_sample=False,
                 pad_token_id=tokenizer.eos_token_id,
             )
@@ -213,7 +213,7 @@ def calculate_refusal_score(model, tokenizer, harmful_prompts, harmless_prompts,
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=50,
+                max_new_tokens=max_tokens,
                 do_sample=False,
                 pad_token_id=tokenizer.eos_token_id,
             )
@@ -310,6 +310,7 @@ def run_single_scan(
     harmless_prompts: list,
     norm_preserve: bool = True,
     projected: bool = True,
+    max_tokens: int = 50,
 ) -> dict:
     """
     Run a single scan configuration and return results.
@@ -331,7 +332,7 @@ def run_single_scan(
     # Evaluate
     print("Evaluating refusal removal...")
     refusal_rate, capability_score = calculate_refusal_score(
-        model, tokenizer, harmful_prompts, harmless_prompts
+        model, tokenizer, harmful_prompts, harmless_prompts, max_tokens=max_tokens
     )
     
     print(f"Refusal rate: {refusal_rate:.2f}%")
@@ -356,6 +357,7 @@ def run_full_sweep(
     num_layers: int,
     norm_preserve: bool = True,
     projected: bool = True,
+    max_tokens: int = 50,
 ) -> dict:
     """
     Run a full sweep of all layer configurations.
@@ -392,6 +394,7 @@ def run_full_sweep(
                 harmless_prompts=harmless_prompts,
                 norm_preserve=norm_preserve,
                 projected=projected,
+                max_tokens=max_tokens,
             )
             
             results[(start, end)] = result
@@ -479,6 +482,8 @@ def main():
     parser.add_argument("--normpreserve", action="store_true", default=True, help="Use norm-preserving ablation")
     parser.add_argument("--projected", action="store_true", default=True, help="Use projected ablation")
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size for evaluation")
+    parser.add_argument("--max-tokens", type=int, default=50, help="Max tokens to generate per prompt (lower = faster)")
+    parser.add_argument("--flash-attn", action="store_true", default=False, help="Use Flash Attention 2")
     
     args = parser.parse_args()
     
@@ -516,12 +521,18 @@ def main():
     device = get_preferred_device()
     print(f"Using device: {device}")
     
+    # Set flash attention implementation
+    attn_impl = "flash_attention_2" if args.flash_attn and device == "cuda" else None
+    if attn_impl:
+        print("Using Flash Attention 2 for faster inference")
+    
     # Load model ONCE (this is the key optimization)
     print(f"Loading model {args.model}...")
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
         torch_dtype=torch.float16,
         device_map=device,
+        attn_implementation=attn_impl,
     )
     tokenizer = AutoTokenizer.from_pretrained(args.model, padding=True)
     print("Model loaded successfully")
@@ -541,6 +552,7 @@ def main():
             num_layers=num_layers,
             norm_preserve=args.normpreserve,
             projected=args.projected,
+            max_tokens=args.max_tokens,
         )
         
         # Generate heatmap visualization
@@ -558,6 +570,7 @@ def main():
             harmless_prompts=harmless_prompts,
             norm_preserve=args.normpreserve,
             projected=args.projected,
+            max_tokens=args.max_tokens,
         )
         
         print(f"\n{'='*60}")

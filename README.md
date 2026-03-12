@@ -109,6 +109,9 @@ Inspired by David Noel Ng's "LLM Neuroanatomy" research, this tool systematicall
 # Full sweep to generate heatmaps and find optimal layers
 python refusal_circuit_scanner_fast.py -m <model> --measurements <measurements_file> -o <output_dir> --sweep --num-layers 64
 
+# Fast sweep with Flash Attention 2 and reduced tokens (2-3x faster)
+python refusal_circuit_scanner_fast.py -m <model> --measurements <measurements_file> -o <output_dir> --sweep --num-layers 64 --flash-attn --max-tokens 10
+
 # Single configuration scan
 python refusal_circuit_scanner_fast.py -m <model> --measurements <measurements_file> -o <output_dir> --start 30 --end 40
 ```
