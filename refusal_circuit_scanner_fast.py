@@ -246,7 +246,16 @@ def save_model_state(model, state_path):
             layer_base = layer_base.language_model
     
     for idx, layer in enumerate(layer_base.layers):
-        state[f'layer_{idx}_self_attn_o_proj'] = layer.self_attn.o_proj.weight.data.clone()
+        # Handle different attention architectures
+        # Qwen3.5 has conditional self_attn based on layer_type
+        if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'o_proj'):
+            state[f'layer_{idx}_self_attn_o_proj'] = layer.self_attn.o_proj.weight.data.clone()
+        
+        # Handle linear attention (Qwen3.5 specific)
+        if hasattr(layer, 'linear_attn') and hasattr(layer.linear_attn, 'out_proj'):
+            state[f'layer_{idx}_linear_attn_out_proj'] = layer.linear_attn.out_proj.weight.data.clone()
+        
+        # Handle different MLP architectures
         if hasattr(layer, 'mlp') and hasattr(layer.mlp, 'down_proj'):
             state[f'layer_{idx}_mlp_down_proj'] = layer.mlp.down_proj.weight.data.clone()
         elif hasattr(layer, 'ffn') and hasattr(layer.ffn, 'down_proj'):
@@ -269,16 +278,24 @@ def restore_model_state(model, state_path):
     for key, weight in state.items():
         if 'self_attn_o_proj' in key:
             layer_idx = int(key.split('_')[1])
-            with torch.no_grad():
-                layer_base.layers[layer_idx].self_attn.o_proj.weight.copy_(weight)
+            if hasattr(layer_base.layers[layer_idx], 'self_attn') and hasattr(layer_base.layers[layer_idx].self_attn, 'o_proj'):
+                with torch.no_grad():
+                    layer_base.layers[layer_idx].self_attn.o_proj.weight.copy_(weight)
+        elif 'linear_attn_out_proj' in key:
+            layer_idx = int(key.split('_')[1])
+            if hasattr(layer_base.layers[layer_idx], 'linear_attn') and hasattr(layer_base.layers[layer_idx].linear_attn, 'out_proj'):
+                with torch.no_grad():
+                    layer_base.layers[layer_idx].linear_attn.out_proj.weight.copy_(weight)
         elif 'mlp_down_proj' in key:
             layer_idx = int(key.split('_')[1])
-            with torch.no_grad():
-                layer_base.layers[layer_idx].mlp.down_proj.weight.copy_(weight)
+            if hasattr(layer_base.layers[layer_idx], 'mlp') and hasattr(layer_base.layers[layer_idx].mlp, 'down_proj'):
+                with torch.no_grad():
+                    layer_base.layers[layer_idx].mlp.down_proj.weight.copy_(weight)
         elif 'ffn_down_proj' in key:
             layer_idx = int(key.split('_')[1])
-            with torch.no_grad():
-                layer_base.layers[layer_idx].ffn.down_proj.weight.copy_(weight)
+            if hasattr(layer_base.layers[layer_idx], 'ffn') and hasattr(layer_base.layers[layer_idx].ffn, 'down_proj'):
+                with torch.no_grad():
+                    layer_base.layers[layer_idx].ffn.down_proj.weight.copy_(weight)
     
     print("Restored model to original state")
 
