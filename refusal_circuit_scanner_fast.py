@@ -193,7 +193,27 @@ def apply_ablation_to_model(
     print(f"Applied abliteration to layers {start_layer}-{end_layer} using measurement from layer {best_source} with scale {scale}")
 
 
-def calculate_refusal_score(model, tokenizer, harmful_prompts, harmless_prompts, batch_size=8, max_tokens=50):
+def pre_tokenize_prompts(tokenizer, prompts, batch_size=8):
+    """Pre-tokenize prompts into batches to save time during evaluation."""
+    batches = []
+    for i in range(0, len(prompts), batch_size):
+        batch = prompts[i:i+batch_size]
+        formatted = [
+            tokenizer.apply_chat_template(
+                conversation=[{"role": "user", "content": prompt}],
+                add_generation_prompt=True,
+                tokenize=False,
+            )
+            for prompt in batch
+        ]
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = 'left'
+        inputs = tokenizer(formatted, padding=True, return_tensors="pt")
+        batches.append(inputs)
+    return batches
+
+
+def calculate_refusal_score(model, tokenizer, harmful_batches, harmless_batches, max_tokens=50):
     """
     Calculate refusal score: lower is better (fewer refusals).
     
@@ -210,23 +230,10 @@ def calculate_refusal_score(model, tokenizer, harmful_prompts, harmless_prompts,
     
     # Test harmful prompts for refusal
     refusals = 0
-    total_harmful = len(harmful_prompts)
+    total_harmful = sum(batch['input_ids'].shape[0] for batch in harmful_batches)
     
-    for i in range(0, total_harmful, batch_size):
-        batch = harmful_prompts[i:i+batch_size]
-        
-        formatted = [
-            tokenizer.apply_chat_template(
-                conversation=[{"role": "user", "content": prompt}],
-                add_generation_prompt=True,
-                tokenize=False,
-            )
-            for prompt in batch
-        ]
-        
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.padding_side = 'left'
-        inputs = tokenizer(formatted, padding=True, return_tensors="pt").to(model.device)
+    for inputs in harmful_batches:
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
         
         with torch.no_grad():
             outputs = model.generate(
@@ -249,23 +256,10 @@ def calculate_refusal_score(model, tokenizer, harmful_prompts, harmless_prompts,
     
     # Test harmless prompts for capability preservation
     capability_scores = []
-    total_harmless = len(harmless_prompts)
+    total_harmless = sum(batch['input_ids'].shape[0] for batch in harmless_batches)
     
-    for i in range(0, total_harmless, batch_size):
-        batch = harmless_prompts[i:i+batch_size]
-        
-        formatted = [
-            tokenizer.apply_chat_template(
-                conversation=[{"role": "user", "content": prompt}],
-                add_generation_prompt=True,
-                tokenize=False,
-            )
-            for prompt in batch
-        ]
-        
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.padding_side = 'left'
-        inputs = tokenizer(formatted, padding=True, return_tensors="pt").to(model.device)
+    for inputs in harmless_batches:
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
         
         with torch.no_grad():
             outputs = model.generate(
@@ -363,8 +357,8 @@ def run_single_scan(
     measures: dict,
     start_layer: int,
     end_layer: int,
-    harmful_prompts: list,
-    harmless_prompts: list,
+    harmful_batches: list,
+    harmless_batches: list,
     norm_preserve: bool = True,
     projected: bool = True,
     max_tokens: int = 50,
@@ -393,7 +387,7 @@ def run_single_scan(
     # Evaluate
     print("Evaluating refusal removal...")
     refusal_rate, capability_score = calculate_refusal_score(
-        model, tokenizer, harmful_prompts, harmless_prompts, max_tokens=max_tokens
+        model, tokenizer, harmful_batches, harmless_batches, max_tokens=max_tokens
     )
 
     print(f"Refusal rate: {refusal_rate:.2f}%")
@@ -413,15 +407,15 @@ def run_config_batch_worker(args):
     Worker function to run a batch of configurations on a specific GPU.
     
     Args:
-        args: Tuple of (config_batch, model_path, measurements_path, harmful_prompts, 
-                       harmless_prompts, gpu_id, norm_preserve, projected, max_tokens, 
+        args: Tuple of (config_batch, model_path, measurements_path, harmful_batches,
+                       harmless_batches, gpu_id, norm_preserve, projected, max_tokens,
                        flash_attn, scale, source_layer)
     
     Returns:
         List of results for the batch
     """
-    (config_batch, model_path, measurements_path, harmful_prompts, 
-     harmless_prompts, gpu_id, norm_preserve, projected, max_tokens, 
+    (config_batch, model_path, measurements_path, harmful_batches,
+     harmless_batches, gpu_id, norm_preserve, projected, max_tokens,
      flash_attn, scale, source_layer) = args
     
     # Set device for this worker
@@ -470,7 +464,7 @@ def run_config_batch_worker(args):
         # Evaluate
         print(f"[GPU {gpu_id}] Evaluating refusal removal...")
         refusal_rate, capability_score = calculate_refusal_score(
-            model, tokenizer, harmful_prompts, harmless_prompts, max_tokens=max_tokens
+            model, tokenizer, harmful_batches, harmless_batches, max_tokens=max_tokens
         )
         
         print(f"[GPU {gpu_id}] Refusal rate: {refusal_rate:.2f}%")
@@ -498,8 +492,8 @@ def run_config_batch_worker(args):
 def run_parallel_sweep(
     model_path: str,
     measurements_path: str,
-    harmful_prompts: list,
-    harmless_prompts: list,
+    harmful_batches: list,
+    harmless_batches: list,
     output_dir: str,
     num_layers: int,
     num_gpus: int,
@@ -559,8 +553,8 @@ def run_parallel_sweep(
             gpu_configs[gpu_id],
             model_path,
             measurements_path,
-            harmful_prompts,
-            harmless_prompts,
+            harmful_batches,
+            harmless_batches,
             gpu_id,
             norm_preserve,
             projected,
@@ -600,8 +594,8 @@ def run_full_sweep(
     model,
     tokenizer,
     measures: dict,
-    harmful_prompts: list,
-    harmless_prompts: list,
+    harmful_batches: list,
+    harmless_batches: list,
     output_dir: str,
     num_layers: int,
     norm_preserve: bool = True,
@@ -641,8 +635,8 @@ def run_full_sweep(
                 measures=measures,
                 start_layer=start,
                 end_layer=end,
-                harmful_prompts=harmful_prompts,
-                harmless_prompts=harmless_prompts,
+                harmful_batches=harmful_batches,
+                harmless_batches=harmless_batches,
                 norm_preserve=norm_preserve,
                 projected=projected,
                 max_tokens=max_tokens,
@@ -793,6 +787,10 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model, padding=True)
     print("Model loaded successfully")
     
+    print("Pre-tokenizing prompts...")
+    harmful_batches = pre_tokenize_prompts(tokenizer, harmful_prompts, args.batch_size)
+    harmless_batches = pre_tokenize_prompts(tokenizer, harmless_prompts, args.batch_size)
+    
     if args.sweep:
         # Run full sweep
         print(f"\n{'='*60}")
@@ -810,8 +808,8 @@ def main():
             results = run_parallel_sweep(
                 model_path=args.model,
                 measurements_path=args.measurements,
-                harmful_prompts=harmful_prompts,
-                harmless_prompts=harmless_prompts,
+                harmful_batches=harmful_batches,
+                harmless_batches=harmless_batches,
                 output_dir=args.output,
                 num_layers=num_layers,
                 num_gpus=args.num_gpus,
@@ -828,8 +826,8 @@ def main():
                 model=model,
                 tokenizer=tokenizer,
                 measures=measures,
-                harmful_prompts=harmful_prompts,
-                harmless_prompts=harmless_prompts,
+                harmful_batches=harmful_batches,
+                harmless_batches=harmless_batches,
                 output_dir=args.output,
                 num_layers=num_layers,
                 norm_preserve=args.normpreserve,
@@ -850,8 +848,8 @@ def main():
             measures=measures,
             start_layer=args.start,
             end_layer=args.end,
-            harmful_prompts=harmful_prompts,
-            harmless_prompts=harmless_prompts,
+            harmful_batches=harmful_batches,
+            harmless_batches=harmless_batches,
             norm_preserve=args.normpreserve,
             projected=args.projected,
             max_tokens=args.max_tokens,
