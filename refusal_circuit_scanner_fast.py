@@ -399,9 +399,10 @@ def run_full_sweep(
             # Restore original state before next iteration
             restore_model_state(model, original_state_path)
             
-            # Save intermediate results
+            # Save intermediate results (convert tuple keys to strings for JSON)
+            json_results = {f"{k[0]}_{k[1]}": v for k, v in results.items()}
             with open(os.path.join(output_dir, "sweep_results.json"), "w") as f:
-                json.dump(results, f, indent=2)
+                json.dump(json_results, f, indent=2)
     
     return results
 
