@@ -88,21 +88,19 @@ def apply_ablation_to_model(
         if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'o_proj'):
             with torch.no_grad():
                 if norm_preserve:
-                    layer.self_attn.o_proj.weight = torch.nn.Parameter(
-                        modify_tensor_norm_preserved(
-                            layer.self_attn.o_proj.weight,
-                            refusal_dir,
-                            scale,
-                        )
+                    modified_weight = modify_tensor_norm_preserved(
+                        layer.self_attn.o_proj.weight,
+                        refusal_dir,
+                        scale,
                     )
                 else:
-                    layer.self_attn.o_proj.weight = torch.nn.Parameter(
-                        modify_tensor(
-                            layer.self_attn.o_proj.weight,
-                            refusal_dir,
-                            scale,
-                        )
+                    modified_weight = modify_tensor(
+                        layer.self_attn.o_proj.weight,
+                        refusal_dir,
+                        scale,
                     )
+                # Ensure the modified weight is on the same device as the original
+                layer.self_attn.o_proj.weight.copy_(modified_weight.to(layer.self_attn.o_proj.weight.device))
         
         # Modify MLP output projection (down_proj)
         # Handle different MLP architectures
@@ -117,21 +115,19 @@ def apply_ablation_to_model(
             if hasattr(mlp_block, 'down_proj'):
                 with torch.no_grad():
                     if norm_preserve:
-                        mlp_block.down_proj.weight = torch.nn.Parameter(
-                            modify_tensor_norm_preserved(
-                                mlp_block.down_proj.weight,
-                                refusal_dir,
-                                scale,
-                            )
+                        modified_weight = modify_tensor_norm_preserved(
+                            mlp_block.down_proj.weight,
+                            refusal_dir,
+                            scale,
                         )
                     else:
-                        mlp_block.down_proj.weight = torch.nn.Parameter(
-                            modify_tensor(
-                                mlp_block.down_proj.weight,
-                                refusal_dir,
-                                scale,
-                            )
+                        modified_weight = modify_tensor(
+                            mlp_block.down_proj.weight,
+                            refusal_dir,
+                            scale,
                         )
+                    # Ensure the modified weight is on the same device as the original
+                    mlp_block.down_proj.weight.copy_(modified_weight.to(mlp_block.down_proj.weight.device))
         
         # Clean up
         del refusal_dir, harmless_dir
