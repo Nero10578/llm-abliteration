@@ -185,7 +185,10 @@ def compute_refusals(
             harmless_normalized = torch.nn.functional.normalize(harmless_mean.float(), dim=0)
 
             # Project and subtract contribution along harmless direction
-            projection_scalar = refusal_dir @ harmless_normalized
+            if refusal_dir.device.type == "xpu":
+                projection_scalar = torch.sum(refusal_dir * harmless_normalized)
+            else:
+                projection_scalar = refusal_dir @ harmless_normalized
 
             # Resulting refusal direction should minimize impact along harmless direction
             refusal_dir = refusal_dir - projection_scalar * harmless_normalized
