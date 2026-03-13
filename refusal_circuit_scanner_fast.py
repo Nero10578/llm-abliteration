@@ -98,22 +98,12 @@ def apply_ablation_to_model(
     projected: bool = True,
     scale: float = 1.0,
     sparsity: float = 0.0,
+    verbose: bool = True,
 ):
     """
     Apply abliteration to model weights in-place (on-the-fly).
     
     This modifies the model's weights directly without saving to disk.
-    
-    Args:
-        model: The model to modify
-        measures: Dictionary of measurements from measure.py
-        start_layer: First layer to ablate
-        end_layer: Last layer to ablate (inclusive)
-        source_layer: Layer to use as refusal direction source
-        norm_preserve: Whether to use norm-preserving ablation
-        projected: Whether to use projected ablation
-        scale: Scale factor for ablation (default 1.0)
-        sparsity: Sparsity fraction for magnitude sparsification
     """
     from sharded_ablate import modify_tensor, modify_tensor_norm_preserved, magnitude_sparsify
     
@@ -212,12 +202,13 @@ def apply_ablation_to_model(
         # Clean up
         del refusal_dir, harmless_dir
     
-    print(f"Applied abliteration to layers {start_layer}-{end_layer} using measurement from layer {source_layer} with scale {scale}")
+    if verbose:
+        print(f"Applied abliteration to layers {start_layer}-{end_layer} using measurement from layer {source_layer} with scale {scale}")
 
 
 def pre_tokenize_prompts(tokenizer, prompts, batch_size=8):
     """Pre-tokenize prompts into batches to save time during evaluation."""
-    batches = []
+    batches =[]
     for i in range(0, len(prompts), batch_size):
         batch = prompts[i:i+batch_size]
         formatted = [
@@ -333,7 +324,7 @@ def get_model_state_backup(model, start_layer, end_layer):
     return state
 
 
-def restore_model_state(model, state):
+def restore_model_state(model, state, verbose: bool = True):
     """Restore model weights from saved state."""
     if hasattr(model, 'language_model'):
         layer_base = model.language_model.model
@@ -364,7 +355,8 @@ def restore_model_state(model, state):
                 with torch.no_grad():
                     layer_base.layers[layer_idx].ffn.down_proj.weight.copy_(weight.to(layer_base.layers[layer_idx].ffn.down_proj.weight.device))
     
-    print("Restored model to original state")
+    if verbose:
+        print("Restored model to original state")
 
 
 def run_single_scan(
@@ -383,8 +375,6 @@ def run_single_scan(
 ) -> dict:
     """
     Run a single scan configuration and return results.
-
-    This version applies abliteration on-the-fly without saving/loading models.
     """
     print(f"\n=== Scanning configuration ({start_layer}, {end_layer}) ===")
 
@@ -398,6 +388,7 @@ def run_single_scan(
         projected=projected,
         scale=scale,
         source_layer=source_layer,
+        verbose=True
     )
 
     # Evaluate
@@ -421,18 +412,16 @@ def run_single_scan(
 def run_config_batch_worker(args):
     """
     Worker function to run a batch of configurations on a specific GPU.
-    
-    Args:
-        args: Tuple of (config_batch, model_path, measurements_path, harmful_batches,
-                       harmless_batches, gpu_id, norm_preserve, projected, max_tokens,
-                       flash_attn, scale, source_layer)
-    
-    Returns:
-        List of results for the batch
     """
     (config_batch, model_path, measurements_path, harmful_batches,
      harmless_batches, gpu_id, norm_preserve, projected, max_tokens,
      flash_attn, scale, source_layer) = args
+    
+    # Suppress HuggingFace logging to avoid breaking tqdm
+    os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '1'
+    os.environ['TRANSFORMERS_VERBOSITY'] = 'error'
+    import transformers
+    transformers.logging.set_verbosity_error()
     
     # Dynamically set device for this worker (CUDA or XPU)
     if hasattr(torch, "xpu") and torch.xpu.is_available():
@@ -443,8 +432,6 @@ def run_config_batch_worker(args):
         device_type = "cuda"
         device = f"cuda:{gpu_id}"
         torch.cuda.set_device(gpu_id)
-    
-    print(f"[GPU {gpu_id}] Loading model...")
     
     # Load measurements
     measures = torch.load(measurements_path, map_location=device)
@@ -461,46 +448,54 @@ def run_config_batch_worker(args):
     )
     tokenizer = AutoTokenizer.from_pretrained(model_path, padding=True)
     
-    print(f"[GPU {gpu_id}] Model loaded. Processing {len(config_batch)} configurations...")
+    results =[]
     
-    results = []
-    for idx, (start, end) in enumerate(config_batch):
-        print(f"[GPU {gpu_id}] Config {idx+1}/{len(config_batch)}: ({start}, {end})")
-        
-        # Save original state for the layers we are about to modify
-        state = get_model_state_backup(model, start, end)
-        
-        # Apply abliteration
-        apply_ablation_to_model(
-            model=model,
-            measures=measures,
-            start_layer=start,
-            end_layer=end,
-            norm_preserve=norm_preserve,
-            projected=projected,
-            scale=scale,
-            source_layer=source_layer,
-        )
-        
-        # Evaluate
-        print(f"[GPU {gpu_id}] Evaluating refusal removal...")
-        refusal_rate, capability_score = calculate_refusal_score(
-            model, tokenizer, harmful_batches, harmless_batches, max_tokens=max_tokens
-        )
-        
-        print(f"[GPU {gpu_id}] Refusal rate: {refusal_rate:.2f}%")
-        print(f"[GPU {gpu_id}] Capability score: {capability_score:.2f}")
-        
-        results.append({
-            "start_layer": start,
-            "end_layer": end,
-            "refusal_rate": refusal_rate,
-            "capability_score": capability_score,
-            "combined_score": refusal_rate - (1 - capability_score) * 50,
-        })
-        
-        # Restore original state
-        restore_model_state(model, state)
+    # position=gpu_id stacks the progress bars cleanly
+    with tqdm(config_batch, desc=f"GPU {gpu_id}", position=gpu_id, leave=True) as pbar:
+        for start, end in pbar:
+            # Save original state for the layers we are about to modify
+            state = get_model_state_backup(model, start, end)
+            
+            # Apply abliteration (silently, to not flood terminal)
+            apply_ablation_to_model(
+                model=model,
+                measures=measures,
+                start_layer=start,
+                end_layer=end,
+                norm_preserve=norm_preserve,
+                projected=projected,
+                scale=scale,
+                source_layer=source_layer,
+                verbose=False
+            )
+            
+            # Evaluate
+            refusal_rate, capability_score = calculate_refusal_score(
+                model, tokenizer, harmful_batches, harmless_batches, max_tokens=max_tokens
+            )
+            
+            combined_score = refusal_rate - (1 - capability_score) * 50
+            
+            # Cleanly write the log above the progress bar
+            log_msg = f"[GPU {gpu_id}] Abliterated layers {start:>2}-{end:<2} | Refusal: {refusal_rate:>5.1f}% | Capability: {capability_score:.2f}"
+            tqdm.write(log_msg)
+            
+            pbar.set_postfix({
+                "cfg": f"{start}-{end}",
+                "refusal": f"{refusal_rate:.1f}%",
+                "cap": f"{capability_score:.2f}"
+            })
+            
+            results.append({
+                "start_layer": start,
+                "end_layer": end,
+                "refusal_rate": refusal_rate,
+                "capability_score": capability_score,
+                "combined_score": combined_score,
+            })
+            
+            # Restore original state (silently)
+            restore_model_state(model, state, verbose=False)
     
     del model, tokenizer, measures
     if device_type == "xpu":
@@ -508,7 +503,6 @@ def run_config_batch_worker(args):
     else:
         torch.cuda.empty_cache()
     
-    print(f"[GPU {gpu_id}] Completed {len(config_batch)} configurations")
     return results
 
 
@@ -529,46 +523,24 @@ def run_parallel_sweep(
 ) -> dict:
     """
     Run a full sweep across multiple GPUs in parallel.
-    
-    Each GPU loads its own copy of the model and processes a subset of configurations.
-    Results are collected and merged at the end.
-    
-    Args:
-        model_path: Path to the model
-        measurements_path: Path to measurements file
-        harmful_prompts: List of harmful prompts for testing
-        harmless_prompts: List of harmless prompts for testing
-        output_dir: Directory to save results
-        num_layers: Total number of layers in the model
-        num_gpus: Number of GPUs to use
-        norm_preserve: Whether to use norm-preserving ablation
-        projected: Whether to use projected ablation
-        max_tokens: Max tokens to generate per prompt
-        flash_attn: Whether to use Flash Attention 2
-        scale: Scale factor for ablation
-        source_layer: Layer to use as refusal direction source (None = auto-detect)
-    
-    Returns:
-        Dictionary of results keyed by (start_layer, end_layer) tuples
     """
     # Generate all configurations
-    all_configs = []
+    all_configs =[]
     for start in range(num_layers):
         for end in range(start + 1, num_layers):
             all_configs.append((start, end))
     
     total_configs = len(all_configs)
     print(f"Total configurations: {total_configs}")
-    print(f"Distributing across {num_gpus} GPUs")
+    print(f"Distributing across {num_gpus} GPUs...\n")
     
     # Split configurations across GPUs
     configs_per_gpu = (total_configs + num_gpus - 1) // num_gpus
-    gpu_configs = []
+    gpu_configs =[]
     for gpu_id in range(num_gpus):
         start_idx = gpu_id * configs_per_gpu
         end_idx = min(start_idx + configs_per_gpu, total_configs)
         gpu_configs.append(all_configs[start_idx:end_idx])
-        print(f"GPU {gpu_id}: {len(gpu_configs[-1])} configurations")
     
     # Prepare worker arguments
     worker_args = [
@@ -589,14 +561,14 @@ def run_parallel_sweep(
         for gpu_id in range(num_gpus)
     ]
     
-    # Run workers in parallel using multiprocessing
-    print(f"\nStarting parallel sweep with {num_gpus} GPUs...")
-    
     # Use spawn method for CUDA compatibility
     mp.set_start_method('spawn', force=True)
     
     with mp.Pool(processes=num_gpus) as pool:
         all_results = pool.map(run_config_batch_worker, worker_args)
+    
+    # Push cursor past the multi-line progress bars
+    print("\n" * num_gpus)
     
     # Merge results
     results = {}
@@ -629,51 +601,65 @@ def run_full_sweep(
 ) -> dict:
     """
     Run a full sweep of all layer configurations.
-    
-    This version is much faster because it doesn't save/load models.
     """
     results = {}
     
     # Sweep all valid (i, j) pairs where i < j
     total_configs = num_layers * (num_layers - 1) // 2
-    print(f"Running full sweep: {total_configs} configurations")
+    print(f"Running full sweep: {total_configs} configurations\n")
     
-    config_index = 0
-    for start in range(num_layers):
-        for end in range(start + 1, num_layers):
-            config_index += 1
-            print(f"\n{'='*60}")
-            print(f"Configuration {config_index}/{total_configs}: ({start}, {end})")
-            print(f"{'='*60}")
-            
-            # Save original state for the layers we are about to modify
-            state = get_model_state_backup(model, start, end)
-            
-            # Run scan
-            result = run_single_scan(
-                model=model,
-                tokenizer=tokenizer,
-                measures=measures,
-                start_layer=start,
-                end_layer=end,
-                harmful_batches=harmful_batches,
-                harmless_batches=harmless_batches,
-                norm_preserve=norm_preserve,
-                projected=projected,
-                max_tokens=max_tokens,
-                scale=scale,
-                source_layer=source_layer,
-            )
-            
-            results[(start, end)] = result
-            
-            # Restore original state before next iteration
-            restore_model_state(model, state)
-            
-            # Save intermediate results (convert tuple keys to strings for JSON)
-            json_results = {f"{k[0]}_{k[1]}": v for k, v in results.items()}
-            with open(os.path.join(output_dir, "sweep_results.json"), "w") as f:
-                json.dump(json_results, f, indent=2)
+    with tqdm(total=total_configs, desc="Full Sweep") as pbar:
+        for start in range(num_layers):
+            for end in range(start + 1, num_layers):
+                # Save original state for the layers we are about to modify
+                state = get_model_state_backup(model, start, end)
+                
+                # Run scan (silently)
+                apply_ablation_to_model(
+                    model=model,
+                    measures=measures,
+                    start_layer=start,
+                    end_layer=end,
+                    norm_preserve=norm_preserve,
+                    projected=projected,
+                    scale=scale,
+                    source_layer=source_layer,
+                    verbose=False
+                )
+                
+                refusal_rate, capability_score = calculate_refusal_score(
+                    model, tokenizer, harmful_batches, harmless_batches, max_tokens=max_tokens
+                )
+                
+                combined_score = refusal_rate - (1 - capability_score) * 50
+                
+                # Cleanly write the log above the progress bar
+                log_msg = f"Abliterated layers {start:>2}-{end:<2} | Refusal: {refusal_rate:>5.1f}% | Capability: {capability_score:.2f}"
+                tqdm.write(log_msg)
+                
+                results[(start, end)] = {
+                    "start_layer": start,
+                    "end_layer": end,
+                    "refusal_rate": refusal_rate,
+                    "capability_score": capability_score,
+                    "combined_score": combined_score,
+                }
+                
+                # Restore original state before next iteration (silently)
+                restore_model_state(model, state, verbose=False)
+                
+                # Update progress bar
+                pbar.set_postfix({
+                    "cfg": f"{start}-{end}",
+                    "refusal": f"{refusal_rate:.1f}%",
+                    "cap": f"{capability_score:.2f}"
+                })
+                pbar.update(1)
+                
+                # Save intermediate results (convert tuple keys to strings for JSON)
+                json_results = {f"{k[0]}_{k[1]}": v for k, v in results.items()}
+                with open(os.path.join(output_dir, "sweep_results.json"), "w") as f:
+                    json.dump(json_results, f, indent=2)
     
     return results
 
@@ -819,7 +805,6 @@ def main():
         print(f"\n{'='*60}")
         print("STARTING FULL SWEEP")
         print(f"{'='*60}")
-        print(f"Using {args.num_gpus} GPUs for parallel processing")
         
         results = run_parallel_sweep(
             model_path=args.model,
