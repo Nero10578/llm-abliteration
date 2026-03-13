@@ -421,9 +421,15 @@ def run_config_batch_worker(args):
      harmless_batches, gpu_id, norm_preserve, projected, max_tokens,
      flash_attn, scale, source_layer) = args
     
-    # Set device for this worker
-    device = f"cuda:{gpu_id}"
-    torch.cuda.set_device(gpu_id)
+    # Dynamically set device for this worker (CUDA or XPU)
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        device_type = "xpu"
+        device = f"xpu:{gpu_id}"
+        torch.xpu.set_device(gpu_id)
+    else:
+        device_type = "cuda"
+        device = f"cuda:{gpu_id}"
+        torch.cuda.set_device(gpu_id)
     
     print(f"[GPU {gpu_id}] Loading model...")
     
@@ -483,9 +489,11 @@ def run_config_batch_worker(args):
         # Restore original state
         restore_model_state(model, state)
     
-    # Cleanup
     del model, tokenizer, measures
-    torch.cuda.empty_cache()
+    if device_type == "xpu":
+        torch.xpu.empty_cache()
+    else:
+        torch.cuda.empty_cache()
     
     print(f"[GPU {gpu_id}] Completed {len(config_batch)} configurations")
     return results
