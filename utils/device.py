@@ -1,15 +1,16 @@
 import torch
 
-
 def get_preferred_device(requested: str | None = "auto") -> str:
     """
     Choose a runtime device based on user request and availability.
-    Falls back in priority order: CUDA -> MPS -> CPU.
+    Falls back in priority order: CUDA -> XPU -> MPS -> CPU.
     """
     if requested and requested != "auto":
         return requested
     if torch.cuda.is_available():
         return "cuda"
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        return "xpu"
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return "mps"
     return "cpu"
@@ -29,6 +30,8 @@ def clear_device_cache() -> None:
     """
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+    elif hasattr(torch, "xpu") and torch.xpu.is_available():
+        torch.xpu.empty_cache()
     elif hasattr(torch, "mps") and torch.backends.mps.is_available():
         torch.mps.empty_cache()
 
@@ -41,6 +44,8 @@ def synchronize_device(device: str | None = None) -> None:
     if target is None or target == "auto":
         if torch.cuda.is_available():
             target = "cuda"
+        elif hasattr(torch, "xpu") and torch.xpu.is_available():
+            target = "xpu"
         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             target = "mps"
         else:
@@ -48,5 +53,7 @@ def synchronize_device(device: str | None = None) -> None:
 
     if target == "cuda":
         torch.cuda.synchronize()
+    elif target == "xpu" and hasattr(torch, "xpu"):
+        torch.xpu.synchronize()
     elif target == "mps" and hasattr(torch, "mps"):
         torch.mps.synchronize()
