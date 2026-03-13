@@ -307,8 +307,11 @@ if __name__ == "__main__":
     elif hasattr(model_config, "dtype") and model_config.dtype is not None:
         precision = model_config.dtype
     else:
-        # Fallback to bfloat16 on CUDA (if supported), otherwise float32 on MPS/CPU, float16 on CUDA
+        # Fallback to bfloat16 on CUDA/XPU (if supported), otherwise float32 on MPS/CPU, float16 on CUDA
         if device == "cuda" and torch.cuda.is_bf16_supported():
+            precision = torch.bfloat16
+        elif device == "xpu":
+            # Intel GPUs are heavily optimized for bfloat16 via XMX engines
             precision = torch.bfloat16
         elif device == "cuda":
             precision = torch.float16
@@ -325,9 +328,13 @@ if __name__ == "__main__":
             "bf16": torch.bfloat16,
             "fp32": torch.float32,
         }
+        # Safely determine bf16 support for fallback
+        cuda_bf16 = device == "cuda" and torch.cuda.is_bf16_supported()
+        xpu_bf16 = device == "xpu"
+        
         precision = dtype_map.get(
             precision,
-            torch.bfloat16 if device == "cuda" and torch.cuda.is_bf16_supported() else torch.float32,
+            torch.bfloat16 if cuda_bf16 or xpu_bf16 else torch.float32,
         )
 
     has_vision = False
