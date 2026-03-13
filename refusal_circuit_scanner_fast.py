@@ -61,7 +61,14 @@ def get_best_source_layer(measures: dict) -> int:
             
             # Refusal purity ratio
             harmless_normalized = harmless_mean / harmless_mean.norm()
-            projection = (refusal_dir @ harmless_normalized) * harmless_normalized
+            
+            # Fast path for CUDA/MPS, fallback to avoid CPU-copy on XPU
+            if refusal_dir.device.type == "xpu":
+                projection_scalar = torch.sum(refusal_dir * harmless_normalized)
+            else:
+                projection_scalar = refusal_dir @ harmless_normalized
+                
+            projection = projection_scalar * harmless_normalized
             refusal_orth = refusal_dir - projection
             if refusal_dir.norm() > 0:
                 purity_ratio = refusal_orth.norm() / refusal_dir.norm()
@@ -141,7 +148,13 @@ def apply_ablation_to_model(
         if projected:
             # Orthogonalize refusal against harmless direction
             harmless_normalized = torch.nn.functional.normalize(harmless_dir, dim=0)
-            projection_scalar = refusal_dir @ harmless_normalized
+            
+            # Fast path for CUDA/MPS, fallback to avoid CPU-copy on XPU
+            if refusal_dir.device.type == "xpu":
+                projection_scalar = torch.sum(refusal_dir * harmless_normalized)
+            else:
+                projection_scalar = refusal_dir @ harmless_normalized
+                
             refined_refusal_dir = refusal_dir - projection_scalar * harmless_normalized
             refusal_dir = refined_refusal_dir
             del harmless_normalized, refined_refusal_dir
