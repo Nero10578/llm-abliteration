@@ -987,6 +987,22 @@ def main():
             time.sleep(10)
         else:
             print(f"\nFound existing sanity check at {sanity_file}, skipping...")
+            with open(sanity_file, "r") as f:
+                sanity_data = json.load(f)
+            print(f"\n{'='*60}")
+            print("INITIAL SANITY CHECK (LOADED FROM DISK)")
+            print(f"{'='*60}")
+            print(f"Initial Refusal rate: {sanity_data.get('refusal_rate', 0):.2f}%")
+            print(f"Initial Capability score: {sanity_data.get('capability_score', 0):.2f}")
+            print(f"{'='*60}\n")
+            with open(sanity_file, "r") as f:
+                sanity_data = json.load(f)
+            print(f"\n{'='*60}")
+            print("INITIAL SANITY CHECK (LOADED FROM DISK)")
+            print(f"{'='*60}")
+            print(f"Initial Refusal rate: {sanity_data.get('refusal_rate', 0):.2f}%")
+            print(f"Initial Capability score: {sanity_data.get('capability_score', 0):.2f}")
+            print(f"{'='*60}\n")
         
         print(f"\n{'='*60}")
         print("STARTING FULL SWEEP")
