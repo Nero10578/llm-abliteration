@@ -360,24 +360,21 @@ def calculate_refusal_score(model, tokenizer, harmful_batches, mmlu_batches, mml
             
             with torch.no_grad():
                 outputs = model(**inputs)
-                logits = outputs.logits
+                # Only grab the final token to match the original_logits
+                logits = outputs.logits[:, -1, :]
                 
                 # Get original logits for this batch
                 orig_logits = original_logits[batch_idx].to(model.device)
                 
-                # Calculate KL divergence
-                # KL(P || Q) = sum(P * log(P/Q)) where P is original, Q is current
-                # We use log_softmax for numerical stability
-                p_log_probs = torch.nn.functional.log_softmax(orig_logits, dim=-1)
+                # Convert original to probabilities, and current to log-probabilities
+                # F.kl_div expects the target (original) to be normal probs, and input (current) to be log_probs
+                p_probs = torch.nn.functional.softmax(orig_logits, dim=-1)
                 q_log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
                 
-                # KLDivLoss expects input in log-space and target in prob-space
-                # But we can just compute it manually: sum(exp(p_log_probs) * (p_log_probs - q_log_probs))
-                p_probs = torch.exp(p_log_probs)
-                kl = torch.sum(p_probs * (p_log_probs - q_log_probs), dim=-1)
+                # Use PyTorch's stable built-in function
+                kl = torch.nn.functional.kl_div(q_log_probs, p_probs, reduction='batchmean')
                 
-                # Average over sequence length and batch
-                total_kl += kl.mean().item()
+                total_kl += kl.item()
                 
             batch_idx += 1
             
