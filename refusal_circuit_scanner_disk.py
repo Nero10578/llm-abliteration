@@ -629,7 +629,10 @@ def run_config_batch_worker(args):
         for start, end in config_batch:
             key = f"{start}_{end}"
             if key in existing_results:
-                results.append(existing_results[key])
+                res = existing_results[key]
+                results.append(res)
+                log_msg = f"[GPU {gpu_id}] Abliterated layers {start:>2}-{end:<2} | Refusal: {res['refusal_rate']:>5.1f}% | Capability: {res['capability_score']:.2f}"
+                print(log_msg)
             else:
                 pending_configs.append((start, end))
         
@@ -846,13 +849,37 @@ def run_full_sweep(
         
     tmp_model_dir = os.path.join(tmp_base_dir, f"tmp_model_single_{os.getpid()}")
     
+    results_file = os.path.join(output_dir, "sweep_results.json")
+    existing_results = {}
+    if os.path.exists(results_file):
+        try:
+            with open(results_file, "r") as f:
+                existing_results = json.load(f)
+        except json.JSONDecodeError:
+            pass
+            
     # Sweep all valid (i, j) pairs where i <= j
-    total_configs = num_layers * (num_layers + 1) // 2
+    all_configs = []
+    for start in range(num_layers):
+        for end in range(start, num_layers):
+            all_configs.append((start, end))
+            
+    total_configs = len(all_configs)
     print(f"Running full sweep: {total_configs} configurations\n")
     
-    with tqdm(total=total_configs, desc="Full Sweep") as pbar:
-        for start in range(num_layers):
-            for end in range(start, num_layers):
+    pending_configs = []
+    for start, end in all_configs:
+        key = f"{start}_{end}"
+        if key in existing_results:
+            res = existing_results[key]
+            results[(start, end)] = res
+            log_msg = f"Abliterated layers {start:>2}-{end:<2} | Refusal: {res['refusal_rate']:>5.1f}% | Capability: {res['capability_score']:.2f}"
+            print(log_msg)
+        else:
+            pending_configs.append((start, end))
+    
+    with tqdm(total=len(pending_configs), desc="Full Sweep") as pbar:
+        for start, end in pending_configs:
                 # 1. Ablate and save to disk
                 orders = [
                     (
