@@ -359,17 +359,21 @@ def calculate_refusal_score(model, tokenizer, harmful_batches, mmlu_batches, mml
                 outputs = model(**inputs)
                 logits = outputs.logits
                 
-                # Get original logits for this batch
+                # Get original logits for this batch (only the last token)
                 orig_logits = original_logits[batch_idx].to(model.device)
                 
-                # Calculate KL divergence
+                # Calculate KL divergence on the last token
+                current_logits = logits[:, -1, :]
+                
                 p_log_probs = torch.nn.functional.log_softmax(orig_logits, dim=-1)
-                q_log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
+                q_log_probs = torch.nn.functional.log_softmax(current_logits, dim=-1)
                 
-                p_probs = torch.exp(p_log_probs)
-                kl = torch.sum(p_probs * (p_log_probs - q_log_probs), dim=-1)
+                # Use PyTorch's built-in kl_div for numerical stability
+                # Note: kl_div expects input to be log-probabilities and target to be probabilities (or log-probabilities if log_target=True)
+                # The first argument is the input (current model), the second is the target (original model)
+                kl = torch.nn.functional.kl_div(q_log_probs, p_log_probs, reduction='batchmean', log_target=True)
                 
-                total_kl += kl.mean().item()
+                total_kl += kl.item()
                 
             batch_idx += 1
             
@@ -455,7 +459,8 @@ def run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answe
             inputs = {k: v.to(model.device) for k, v in inputs.items()}
             with torch.no_grad():
                 outputs = model(**inputs)
-                original_logits.append(outputs.logits.cpu())
+                # Only save the logits for the last token to save memory
+                original_logits.append(outputs.logits[:, -1, :].cpu())
         
         # Save original logits
         torch.save(original_logits, os.path.join(output_dir, "original_logits.pt"))

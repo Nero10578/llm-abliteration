@@ -463,7 +463,8 @@ def run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answe
             inputs = {k: v.to(model.device) for k, v in inputs.items()}
             with torch.no_grad():
                 outputs = model(**inputs)
-                original_logits.append(outputs.logits.cpu())
+                # Only save the logits for the last token to save memory
+                original_logits.append(outputs.logits[:, -1, :].cpu())
         
         # Save original logits
         torch.save(original_logits, os.path.join(output_dir, "original_logits.pt"))
