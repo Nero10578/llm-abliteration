@@ -25,8 +25,56 @@ import torch
 import multiprocessing as mp
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from datasets import load_dataset
 from utils.data import load_data
 from utils.device import clear_device_cache, get_preferred_device, synchronize_device
+
+MMLU_CHOICES = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P"]
+
+def format_simple_prompt(example):
+    prompt = example["question"] + "\n\nOptions:\n"
+    for i, opt in enumerate(example["options"]):
+        prompt += "{}. {}\n".format(MMLU_CHOICES[i], opt)
+    return prompt
+
+def extract_answer(text):
+    pattern = r"answer is \(?([A-J])\)?"
+    match = re.search(pattern, text)
+    if match:
+        return match.group(1)
+    else:
+        match = re.search(r'.*[aA]nswer:\s*([A-J])', text)
+        if match:
+            return match.group(1)
+        else:
+            pattern = r"\b[A-J]\b(?!.*\b[A-J]\b)"
+            match = re.search(pattern, text, re.DOTALL)
+            if match:
+                return match.group(0)
+            else:
+                return None
+
+def load_mmlu_pro_subset(num_questions=20):
+    print(f"Loading MMLU-Pro dataset (first {num_questions} questions)...")
+    dataset = load_dataset("TIGER-Lab/MMLU-Pro")
+    test_df = list(dataset["test"])
+    
+    # Preprocess options
+    for i in range(len(test_df)):
+        options = [opt for opt in test_df[i]["options"] if opt != "N/A"]
+        test_df[i]["options"] = options
+            
+    subset = []
+    for i in range(min(num_questions, len(test_df))):
+        curr = test_df[i]
+        prompt = format_simple_prompt(curr)
+        subset.append({
+            "prompt": prompt,
+            "answer": curr["answer"],
+            "answer_index": curr["answer_index"],
+            "options": curr["options"]
+        })
+    return subset
 
 
 def get_best_source_layer(measures: dict) -> int:
@@ -206,19 +254,22 @@ def apply_ablation_to_model(
         print(f"Applied abliteration to layers {start_layer}-{end_layer} using measurement from layer {source_layer} with scale {scale}")
 
 
-def pre_tokenize_prompts(tokenizer, prompts, batch_size=8):
+def pre_tokenize_prompts(tokenizer, prompts, batch_size=8, is_chat=True):
     """Pre-tokenize prompts into batches to save time during evaluation."""
     batches =[]
     for i in range(0, len(prompts), batch_size):
         batch = prompts[i:i+batch_size]
-        formatted = [
-            tokenizer.apply_chat_template(
-                conversation=[{"role": "user", "content": prompt}],
-                add_generation_prompt=True,
-                tokenize=False,
-            )
-            for prompt in batch
-        ]
+        if is_chat:
+            formatted = [
+                tokenizer.apply_chat_template(
+                    conversation=[{"role": "user", "content": prompt}],
+                    add_generation_prompt=True,
+                    tokenize=False,
+                )
+                for prompt in batch
+            ]
+        else:
+            formatted = batch
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.padding_side = 'left'
         inputs = tokenizer(formatted, padding=True, return_tensors="pt")
@@ -226,7 +277,7 @@ def pre_tokenize_prompts(tokenizer, prompts, batch_size=8):
     return batches
 
 
-def calculate_refusal_score(model, tokenizer, harmful_batches, harmless_batches, max_tokens=50):
+def calculate_refusal_score(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=50, mmlu_max_tokens=2048):
     """
     Calculate refusal score: lower is better (fewer refusals).
     
@@ -264,17 +315,18 @@ def calculate_refusal_score(model, tokenizer, harmful_batches, harmless_batches,
     
     refusal_rate = (refusals / total_harmful) * 100 if total_harmful > 0 else 0
     
-    # Test harmless prompts for capability preservation
-    capability_scores = []
-    total_harmless = sum(batch['input_ids'].shape[0] for batch in harmless_batches)
+    # Test MMLU-Pro for capability preservation
+    correct = 0
+    total_mmlu = len(mmlu_answers)
+    answer_idx = 0
     
-    for inputs in harmless_batches:
+    for inputs in mmlu_batches:
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
         
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=max_tokens,
+                max_new_tokens=mmlu_max_tokens,
                 do_sample=False,
                 pad_token_id=tokenizer.eos_token_id,
             )
@@ -282,15 +334,12 @@ def calculate_refusal_score(model, tokenizer, harmful_batches, harmless_batches,
         responses = tokenizer.batch_decode(outputs[:, inputs['input_ids'].shape[1]:], skip_special_tokens=True)
         
         for response in responses:
-            unique_words = len(set(response.lower().split()))
-            if unique_words > 5:
-                capability_scores.append(1.0)
-            elif unique_words > 2:
-                capability_scores.append(0.5)
-            else:
-                capability_scores.append(0.0)
-    
-    capability_score = sum(capability_scores) / len(capability_scores) if capability_scores else 0
+            pred = extract_answer(response)
+            if pred == mmlu_answers[answer_idx]:
+                correct += 1
+            answer_idx += 1
+            
+    capability_score = correct / total_mmlu if total_mmlu > 0 else 0
     
     return refusal_rate, capability_score
 
@@ -366,7 +415,8 @@ def run_single_scan(
     start_layer: int,
     end_layer: int,
     harmful_batches: list,
-    harmless_batches: list,
+    mmlu_batches: list,
+    mmlu_answers: list,
     norm_preserve: bool = True,
     projected: bool = True,
     max_tokens: int = 50,
@@ -394,7 +444,7 @@ def run_single_scan(
     # Evaluate
     print("Evaluating refusal removal...")
     refusal_rate, capability_score = calculate_refusal_score(
-        model, tokenizer, harmful_batches, harmless_batches, max_tokens=max_tokens
+        model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=max_tokens
     )
 
     print(f"Refusal rate: {refusal_rate:.2f}%")
@@ -414,7 +464,7 @@ def run_config_batch_worker(args):
     Worker function to run a batch of configurations on a specific GPU.
     """
     (config_batch, model_path, measurements_path, harmful_batches,
-     harmless_batches, gpu_id, norm_preserve, projected, max_tokens,
+     mmlu_batches, mmlu_answers, gpu_id, norm_preserve, projected, max_tokens,
      flash_attn, scale, source_layer) = args
     
     # Suppress HuggingFace logging to avoid breaking tqdm
@@ -471,7 +521,7 @@ def run_config_batch_worker(args):
             
             # Evaluate
             refusal_rate, capability_score = calculate_refusal_score(
-                model, tokenizer, harmful_batches, harmless_batches, max_tokens=max_tokens
+                model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=max_tokens
             )
             
             combined_score = refusal_rate - (1 - capability_score) * 50
@@ -510,7 +560,8 @@ def run_parallel_sweep(
     model_path: str,
     measurements_path: str,
     harmful_batches: list,
-    harmless_batches: list,
+    mmlu_batches: list,
+    mmlu_answers: list,
     output_dir: str,
     num_layers: int,
     num_gpus: int,
@@ -549,7 +600,8 @@ def run_parallel_sweep(
             model_path,
             measurements_path,
             harmful_batches,
-            harmless_batches,
+            mmlu_batches,
+            mmlu_answers,
             gpu_id,
             norm_preserve,
             projected,
@@ -590,7 +642,8 @@ def run_full_sweep(
     tokenizer,
     measures: dict,
     harmful_batches: list,
-    harmless_batches: list,
+    mmlu_batches: list,
+    mmlu_answers: list,
     output_dir: str,
     num_layers: int,
     norm_preserve: bool = True,
@@ -628,7 +681,7 @@ def run_full_sweep(
                 )
                 
                 refusal_rate, capability_score = calculate_refusal_score(
-                    model, tokenizer, harmful_batches, harmless_batches, max_tokens=max_tokens
+                    model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=max_tokens
                 )
                 
                 combined_score = refusal_rate - (1 - capability_score) * 50
@@ -728,7 +781,6 @@ def main():
     parser.add_argument("--measurements", type=str, required=True, help="Path to measurements file from measure.py")
     parser.add_argument("--output", "-o", type=str, required=True, help="Output directory for results")
     parser.add_argument("--data-harmful", type=str, default=None, help="Harmful prompts file")
-    parser.add_argument("--data-harmless", type=str, default=None, help="Harmless prompts file")
     parser.add_argument("--start", type=int, default=None, help="Start layer for single scan")
     parser.add_argument("--end", type=int, default=None, help="End layer for single scan")
     parser.add_argument("--sweep", action="store_true", help="Run full sweep of all layer configurations")
@@ -763,16 +815,15 @@ def main():
     else:
         harmful_prompts = load_data("./data/harmful.parquet")
     
-    if args.data_harmless:
-        harmless_prompts = load_data(args.data_harmless)
-    else:
-        harmless_prompts = load_data("./data/harmless.parquet")
-    
     # Limit prompts for faster scanning
     harmful_prompts = harmful_prompts[:100]
-    harmless_prompts = harmless_prompts[:100]
     
-    print(f"Using {len(harmful_prompts)} harmful prompts and {len(harmless_prompts)} harmless prompts")
+    # Load MMLU-Pro subset
+    mmlu_subset = load_mmlu_pro_subset(num_questions=20)
+    mmlu_prompts = [item["prompt"] for item in mmlu_subset]
+    mmlu_answers = [item["answer"] for item in mmlu_subset]
+    
+    print(f"Using {len(harmful_prompts)} harmful prompts and {len(mmlu_prompts)} MMLU-Pro questions")
     
     # Get device
     device = get_preferred_device()
@@ -788,8 +839,8 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model, padding=True)
     
     print("Pre-tokenizing prompts...")
-    harmful_batches = pre_tokenize_prompts(tokenizer, harmful_prompts, args.batch_size)
-    harmless_batches = pre_tokenize_prompts(tokenizer, harmless_prompts, args.batch_size)
+    harmful_batches = pre_tokenize_prompts(tokenizer, harmful_prompts, args.batch_size, is_chat=True)
+    mmlu_batches = pre_tokenize_prompts(tokenizer, mmlu_prompts, args.batch_size, is_chat=True)
     
     # Determine source layer once
     if args.source_layer is not None:
@@ -810,7 +861,8 @@ def main():
             model_path=args.model,
             measurements_path=args.measurements,
             harmful_batches=harmful_batches,
-            harmless_batches=harmless_batches,
+            mmlu_batches=mmlu_batches,
+            mmlu_answers=mmlu_answers,
             output_dir=args.output,
             num_layers=num_layers,
             num_gpus=args.num_gpus,
@@ -847,7 +899,8 @@ def main():
                 tokenizer=tokenizer,
                 measures=measures,
                 harmful_batches=harmful_batches,
-                harmless_batches=harmless_batches,
+                mmlu_batches=mmlu_batches,
+                mmlu_answers=mmlu_answers,
                 output_dir=args.output,
                 num_layers=num_layers,
                 norm_preserve=args.normpreserve,
@@ -869,7 +922,8 @@ def main():
                 start_layer=args.start,
                 end_layer=args.end,
                 harmful_batches=harmful_batches,
-                harmless_batches=harmless_batches,
+                mmlu_batches=mmlu_batches,
+                mmlu_answers=mmlu_answers,
                 norm_preserve=args.normpreserve,
                 projected=args.projected,
                 max_tokens=args.max_tokens,
