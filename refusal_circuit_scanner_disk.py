@@ -614,13 +614,21 @@ def run_config_batch_worker(args):
         
         results = []
         results_file = os.path.join(output_dir, f"sweep_results_gpu_{gpu_id}.json")
+        global_results_file = os.path.join(output_dir, "sweep_results.json")
         
         # Load existing results to resume if crashed
         existing_results = {}
+        if os.path.exists(global_results_file):
+            try:
+                with open(global_results_file, "r") as f:
+                    existing_results.update(json.load(f))
+            except json.JSONDecodeError:
+                pass
+                
         if os.path.exists(results_file):
             try:
                 with open(results_file, "r") as f:
-                    existing_results = json.load(f)
+                    existing_results.update(json.load(f))
             except json.JSONDecodeError:
                 pass
                 
