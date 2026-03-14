@@ -510,7 +510,7 @@ def run_config_batch_worker(args):
     """
     (config_batch, model_path, measurements_path, harmful_batches,
      mmlu_batches, mmlu_answers, gpu_id, norm_preserve, projected, max_tokens,
-     flash_attn, scale, source_layer) = args
+     flash_attn, scale, source_layer, output_dir) = args
     
     # Suppress HuggingFace logging to avoid breaking tqdm
     os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '1'
