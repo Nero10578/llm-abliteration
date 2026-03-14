@@ -534,71 +534,83 @@ def run_config_batch_worker(args):
     # Set flash attention implementation
     attn_impl = "flash_attention_2" if flash_attn else None
     
-    # Load model on this GPU
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        dtype=torch.float16,
-        device_map=device,
-        attn_implementation=attn_impl,
-    )
-    tokenizer = AutoTokenizer.from_pretrained(model_path, padding=True)
-    
-    results =[]
-    
-    # position=gpu_id stacks the progress bars cleanly
-    with tqdm(config_batch, desc=f"GPU {gpu_id}", position=gpu_id, leave=True) as pbar:
-        for start, end in pbar:
-            # Save original state for the layers we are about to modify
-            state = get_model_state_backup(model, start, end)
+    try:
+        import time
+        import traceback
+        
+        # Load model on this GPU
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            dtype=torch.float16,
+            device_map=device,
+            attn_implementation=attn_impl,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(model_path, padding=True)
+        
+        results =[]
+        
+        # position=gpu_id stacks the progress bars cleanly
+        with tqdm(config_batch, desc=f"GPU {gpu_id}", position=gpu_id, leave=True) as pbar:
+            for start, end in pbar:
+                # Save original state for the layers we are about to modify
+                state = get_model_state_backup(model, start, end)
+                
+                # Apply abliteration (silently, to not flood terminal)
+                apply_ablation_to_model(
+                    model=model,
+                    measures=measures,
+                    start_layer=start,
+                    end_layer=end,
+                    norm_preserve=norm_preserve,
+                    projected=projected,
+                    scale=scale,
+                    source_layer=source_layer,
+                    verbose=False
+                )
+                
+                # Evaluate
+                refusal_rate, capability_score = calculate_refusal_score(
+                    model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=max_tokens
+                )
+                
+                combined_score = refusal_rate + ((1.0 - capability_score) * 100)
+                
+                # Cleanly write the log above the progress bar
+                log_msg = f"[GPU {gpu_id}] Abliterated layers {start:>2}-{end:<2} | Refusal: {refusal_rate:>5.1f}% | Capability: {capability_score:.2f}"
+                tqdm.write(log_msg)
+                
+                pbar.set_postfix({
+                    "cfg": f"{start}-{end}",
+                    "refusal": f"{refusal_rate:.1f}%",
+                    "cap": f"{capability_score:.2f}"
+                })
+                
+                results.append({
+                    "start_layer": start,
+                    "end_layer": end,
+                    "refusal_rate": refusal_rate,
+                    "capability_score": capability_score,
+                    "combined_score": combined_score,
+                })
+                
+                # Restore original state (silently)
+                restore_model_state(model, state, verbose=False)
             
-            # Apply abliteration (silently, to not flood terminal)
-            apply_ablation_to_model(
-                model=model,
-                measures=measures,
-                start_layer=start,
-                end_layer=end,
-                norm_preserve=norm_preserve,
-                projected=projected,
-                scale=scale,
-                source_layer=source_layer,
-                verbose=False
-            )
-            
-            # Evaluate
-            refusal_rate, capability_score = calculate_refusal_score(
-                model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=max_tokens
-            )
-            
-            combined_score = refusal_rate + ((1.0 - capability_score) * 100)
-            
-            # Cleanly write the log above the progress bar
-            log_msg = f"[GPU {gpu_id}] Abliterated layers {start:>2}-{end:<2} | Refusal: {refusal_rate:>5.1f}% | Capability: {capability_score:.2f}"
-            tqdm.write(log_msg)
-            
-            pbar.set_postfix({
-                "cfg": f"{start}-{end}",
-                "refusal": f"{refusal_rate:.1f}%",
-                "cap": f"{capability_score:.2f}"
-            })
-            
-            results.append({
-                "start_layer": start,
-                "end_layer": end,
-                "refusal_rate": refusal_rate,
-                "capability_score": capability_score,
-                "combined_score": combined_score,
-            })
-            
-            # Restore original state (silently)
-            restore_model_state(model, state, verbose=False)
-    
-    del model, tokenizer, measures
-    if device_type == "xpu":
-        torch.xpu.empty_cache()
-    else:
-        torch.cuda.empty_cache()
-    
-    return results
+        del model, tokenizer, measures
+        if device_type == "xpu":
+            torch.xpu.empty_cache()
+        else:
+            torch.cuda.empty_cache()
+        
+        return results
+        
+    except Exception as e:
+        print(f"\n[GPU {gpu_id}] CRASHED WITH ERROR:\n{traceback.format_exc()}")
+        return []
+        
+    except Exception as e:
+        print(f"\n[GPU {gpu_id}] CRASHED WITH ERROR:\n{traceback.format_exc()}")
+        return []
 
 
 def run_parallel_sweep(
@@ -905,6 +917,10 @@ def main():
         p = mp.Process(target=run_sanity_check_process_worker, args=(sanity_args,))
         p.start()
         p.join()
+        
+        # Give the OS a moment to fully reclaim the GPU memory from the sanity check process
+        import time
+        time.sleep(10)
         
         print(f"\n{'='*60}")
         print("STARTING FULL SWEEP")
