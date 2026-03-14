@@ -54,7 +54,7 @@ def extract_answer(text):
             else:
                 return None
 
-def load_mmlu_pro_subset(num_questions=20):
+def load_mmlu_pro_subset(num_questions=16):
     print(f"Loading MMLU-Pro dataset (first {num_questions} questions)...")
     dataset = load_dataset("TIGER-Lab/MMLU-Pro")
     test_df = list(dataset["test"])
@@ -819,7 +819,7 @@ def main():
     harmful_prompts = harmful_prompts[:100]
     
     # Load MMLU-Pro subset
-    mmlu_subset = load_mmlu_pro_subset(num_questions=20)
+    mmlu_subset = load_mmlu_pro_subset(num_questions=16)
     mmlu_prompts = [item["prompt"] for item in mmlu_subset]
     mmlu_answers = [item["answer"] for item in mmlu_subset]
     
