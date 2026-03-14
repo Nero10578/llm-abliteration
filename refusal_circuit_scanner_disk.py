@@ -725,7 +725,7 @@ def run_parallel_sweep(
     # Generate all configurations
     all_configs =[]
     for start in range(num_layers):
-        for end in range(start + 1, num_layers):
+        for end in range(start, num_layers):
             all_configs.append((start, end))
     
     total_configs = len(all_configs)
@@ -846,13 +846,13 @@ def run_full_sweep(
         
     tmp_model_dir = os.path.join(tmp_base_dir, f"tmp_model_single_{os.getpid()}")
     
-    # Sweep all valid (i, j) pairs where i < j
-    total_configs = num_layers * (num_layers - 1) // 2
+    # Sweep all valid (i, j) pairs where i <= j
+    total_configs = num_layers * (num_layers + 1) // 2
     print(f"Running full sweep: {total_configs} configurations\n")
     
     with tqdm(total=total_configs, desc="Full Sweep") as pbar:
         for start in range(num_layers):
-            for end in range(start + 1, num_layers):
+            for end in range(start, num_layers):
                 # 1. Ablate and save to disk
                 orders = [
                     (
@@ -1137,7 +1137,7 @@ def main():
     else:
         # Run sanity check in a separate process to avoid CUDA initialization issues in the main process
         mp.set_start_method('spawn', force=True)
-        sanity_args = (args.model, harmful_batches, mmlu_batches, mmlu_answers, args.output, args.max_tokens, args.flash_attn, args.quantization)
+        sanity_args = (args.model, harmful_batches, mmlu_batches, mmlu_answers, args.output, args.max_tokens, args.flash_attn, args.quantization, tmp_base_dir)
         p = mp.Process(target=run_sanity_check_process_worker, args=(sanity_args,))
         p.start()
         p.join()

@@ -662,7 +662,7 @@ def run_parallel_sweep(
     # Generate all configurations
     all_configs =[]
     for start in range(num_layers):
-        for end in range(start + 1, num_layers):
+        for end in range(start, num_layers):
             all_configs.append((start, end))
     
     total_configs = len(all_configs)
@@ -764,13 +764,13 @@ def run_full_sweep(
     """
     results = {}
     
-    # Sweep all valid (i, j) pairs where i < j
-    total_configs = num_layers * (num_layers - 1) // 2
+    # Sweep all valid (i, j) pairs where i <= j
+    total_configs = num_layers * (num_layers + 1) // 2
     print(f"Running full sweep: {total_configs} configurations\n")
     
     with tqdm(total=total_configs, desc="Full Sweep") as pbar:
         for start in range(num_layers):
-            for end in range(start + 1, num_layers):
+            for end in range(start, num_layers):
                 # Save original state for the layers we are about to modify
                 state = get_model_state_backup(model, start, end)
                 
