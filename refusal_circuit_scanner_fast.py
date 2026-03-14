@@ -411,6 +411,21 @@ def restore_model_state(model, state, verbose: bool = True):
         print("Restored model to original state")
 
 
+def run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=50):
+    print(f"\n{'='*60}")
+    print("RUNNING INITIAL SANITY CHECK (NO ABLITERATION)")
+    print(f"{'='*60}")
+    
+    refusal_rate, capability_score = calculate_refusal_score(
+        model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=max_tokens
+    )
+    
+    print(f"Initial Refusal rate: {refusal_rate:.2f}%")
+    print(f"Initial Capability score: {capability_score:.2f}")
+    print(f"{'='*60}\n")
+    return refusal_rate, capability_score
+
+
 def run_single_scan(
     model,
     tokenizer,
@@ -856,6 +871,17 @@ def main():
     
     if args.sweep and args.num_gpus > 1:
         # Multi-GPU parallel sweep
+        print(f"Loading model {args.model} for sanity check...")
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model,
+            torch_dtype=torch.float16,
+            device_map=device,
+            attn_implementation=attn_impl,
+        )
+        run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=args.max_tokens)
+        del model
+        clear_device_cache()
+        
         print(f"\n{'='*60}")
         print("STARTING FULL SWEEP")
         print(f"{'='*60}")
@@ -889,6 +915,8 @@ def main():
             attn_implementation=attn_impl,
         )
         print("Model loaded successfully")
+        
+        run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=args.max_tokens)
         
         if args.sweep:
             # Run full sweep
