@@ -790,28 +790,44 @@ def generate_heatmap_visualization(results: dict, output_dir: str, num_layers: i
         combined_matrix[start, end] = result["combined_score"]
     
     # Create figure with subplots
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    fig, axes = plt.subplots(1, 3, figsize=(24, 8))
+    
+    # Helper function to format axes
+    def format_axis(ax, title, im):
+        ax.set_title(title)
+        ax.set_xlabel('End Layer (j)')
+        ax.set_ylabel('Start Layer (i)')
+        
+        # Set ticks for every layer
+        ax.set_xticks(np.arange(num_layers))
+        ax.set_yticks(np.arange(num_layers))
+        
+        # Label ticks with layer numbers
+        ax.set_xticklabels(np.arange(num_layers), fontsize=8)
+        ax.set_yticklabels(np.arange(num_layers), fontsize=8)
+        
+        # Rotate x labels for better readability
+        plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+        
+        # Add gridlines
+        ax.set_xticks(np.arange(-.5, num_layers, 1), minor=True)
+        ax.set_yticks(np.arange(-.5, num_layers, 1), minor=True)
+        ax.grid(which="minor", color="w", linestyle='-', linewidth=0.5)
+        ax.tick_params(which="minor", bottom=False, left=False)
+        
+        plt.colorbar(im, ax=ax)
     
     # Refusal rate heatmap (lower is better - use reverse colormap)
     im1 = axes[0].imshow(refusal_matrix, cmap='RdYlGn_r', aspect='auto')
-    axes[0].set_title('Refusal Rate (Lower is Better)')
-    axes[0].set_xlabel('End Layer (j)')
-    axes[0].set_ylabel('Start Layer (i)')
-    plt.colorbar(im1, ax=axes[0])
+    format_axis(axes[0], 'Refusal Rate (Lower is Better)', im1)
     
     # Capability score heatmap (higher is better)
     im2 = axes[1].imshow(capability_matrix, cmap='RdYlGn', aspect='auto')
-    axes[1].set_title('Capability Score (Higher is Better)')
-    axes[1].set_xlabel('End Layer (j)')
-    axes[1].set_ylabel('Start Layer (i)')
-    plt.colorbar(im2, ax=axes[1])
+    format_axis(axes[1], 'Capability Score (Higher is Better)', im2)
     
     # Combined score heatmap (lower is better)
     im3 = axes[2].imshow(combined_matrix, cmap='RdYlGn_r', aspect='auto')
-    axes[2].set_title('Combined Score (Lower is Better)')
-    axes[2].set_xlabel('End Layer (j)')
-    axes[2].set_ylabel('Start Layer (i)')
-    plt.colorbar(im3, ax=axes[2])
+    format_axis(axes[2], 'Combined Score (Lower is Better)', im3)
     
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "refusal_circuit_heatmap.png"), dpi=300)
