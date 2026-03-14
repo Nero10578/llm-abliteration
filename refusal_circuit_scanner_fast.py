@@ -35,6 +35,8 @@ def format_simple_prompt(example):
     prompt = example["question"] + "\n\nOptions:\n"
     for i, opt in enumerate(example["options"]):
         prompt += "{}. {}\n".format(MMLU_CHOICES[i], opt)
+    
+    prompt += "\nAnswer directly with just the correct option letter (e.g., 'Answer: A')."
     return prompt
 
 def extract_answer(text):
@@ -256,7 +258,7 @@ def apply_ablation_to_model(
 
 def pre_tokenize_prompts(tokenizer, prompts, batch_size=8, is_chat=True):
     """Pre-tokenize prompts into batches to save time during evaluation."""
-    batches =[]
+    batches = []
     for i in range(0, len(prompts), batch_size):
         batch = prompts[i:i+batch_size]
         if is_chat:
@@ -265,6 +267,7 @@ def pre_tokenize_prompts(tokenizer, prompts, batch_size=8, is_chat=True):
                     conversation=[{"role": "user", "content": prompt}],
                     add_generation_prompt=True,
                     tokenize=False,
+                    enable_thinking=False,
                 )
                 for prompt in batch
             ]
@@ -277,7 +280,7 @@ def pre_tokenize_prompts(tokenizer, prompts, batch_size=8, is_chat=True):
     return batches
 
 
-def calculate_refusal_score(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=50, mmlu_max_tokens=16384):
+def calculate_refusal_score(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=50, mmlu_max_tokens=10):
     """
     Calculate refusal score: lower is better (fewer refusals).
     
