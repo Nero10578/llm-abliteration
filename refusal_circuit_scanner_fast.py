@@ -1,11 +1,8 @@
 """
-Refusal Circuit Scanner (Fast Version with KL Divergence) - A "brain scanner" for identifying refusal circuits in LLMs.
+Refusal Circuit Scanner (Fast Version) - A "brain scanner" for identifying refusal circuits in LLMs.
 
 This version applies abliteration on-the-fly during inference, eliminating the need to save/load
 models for each configuration. Much faster than the original version.
-
-It evaluates capability preservation by calculating the KL Divergence of the ablated model
-against the original base model using a single forward pass, providing high accuracy and speed.
 
 Supports multi-GPU parallelization for near-linear speedup.
 
@@ -49,7 +46,7 @@ def get_best_source_layer(measures: dict) -> int:
             if harmful_mean is None or harmless_mean is None:
                 continue
             
-            # Calculate signal quality
+            # Calculate signal quality (same formula as analyze.py)
             harmful_norm = harmful_mean.norm().item()
             harmless_norm = harmless_mean.norm().item()
             refusal_norm = refusal_dir.norm().item()
@@ -105,9 +102,12 @@ def apply_ablation_to_model(
 ):
     """
     Apply abliteration to model weights in-place (on-the-fly).
+    
+    This modifies the model's weights directly without saving to disk.
     """
     from sharded_ablate import modify_tensor, modify_tensor_norm_preserved, magnitude_sparsify
     
+    # Get the model's layer structure
     if hasattr(model, 'language_model'):
         layer_base = model.language_model.model
     else:
@@ -115,9 +115,11 @@ def apply_ablation_to_model(
         if hasattr(layer_base, 'language_model'):
             layer_base = layer_base.language_model
     
+    # Apply ablation to each layer in the range
     for layer_idx in range(start_layer, end_layer + 1):
         layer = layer_base.layers[layer_idx]
         
+        # Find the device of the layer's weights
         target_device = None
         if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'o_proj'):
             target_device = layer.self_attn.o_proj.weight.device
@@ -129,11 +131,15 @@ def apply_ablation_to_model(
         if target_device is None:
             continue
         
+        # Get refusal direction for this layer and move to target device
         refusal_dir = measures[f'refuse_{source_layer}'].float().to(target_device)
         harmless_dir = measures[f'harmless_{layer_idx}'].float().to(target_device)
         
         if projected:
+            # Orthogonalize refusal against harmless direction
             harmless_normalized = torch.nn.functional.normalize(harmless_dir, dim=0)
+            
+            # Fast path for CUDA/MPS, fallback to avoid CPU-copy on XPU
             if refusal_dir.device.type == "xpu":
                 projection_scalar = torch.sum(refusal_dir * harmless_normalized)
             else:
@@ -143,41 +149,57 @@ def apply_ablation_to_model(
             refusal_dir = refined_refusal_dir
             del harmless_normalized, refined_refusal_dir
         
+        # Apply sparsity
         if sparsity > 0.0:
             refusal_dir = magnitude_sparsify(refusal_dir, fraction=sparsity)
         
+        # Normalize
         refusal_dir = torch.nn.functional.normalize(refusal_dir, dim=-1)
         
+        # Modify attention output projection (o_proj)
         if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'o_proj'):
             with torch.no_grad():
                 if norm_preserve:
                     modified_weight = modify_tensor_norm_preserved(
-                        layer.self_attn.o_proj.weight, refusal_dir, scale,
+                        layer.self_attn.o_proj.weight,
+                        refusal_dir,
+                        scale,
                     )
                 else:
                     modified_weight = modify_tensor(
-                        layer.self_attn.o_proj.weight, refusal_dir, scale,
+                        layer.self_attn.o_proj.weight,
+                        refusal_dir,
+                        scale,
                     )
                 layer.self_attn.o_proj.weight.copy_(modified_weight)
         
+        # Modify MLP output projection (down_proj)
+        # Handle different MLP architectures
         mlp_block = None
         if hasattr(layer, 'mlp'):
             mlp_block = layer.mlp
         elif hasattr(layer, 'ffn'):
             mlp_block = layer.ffn
         
-        if mlp_block is not None and hasattr(mlp_block, 'down_proj'):
-            with torch.no_grad():
-                if norm_preserve:
-                    modified_weight = modify_tensor_norm_preserved(
-                        mlp_block.down_proj.weight, refusal_dir, scale,
-                    )
-                else:
-                    modified_weight = modify_tensor(
-                        mlp_block.down_proj.weight, refusal_dir, scale,
-                    )
-                mlp_block.down_proj.weight.copy_(modified_weight)
+        if mlp_block is not None:
+            # Check for down_proj (standard architecture)
+            if hasattr(mlp_block, 'down_proj'):
+                with torch.no_grad():
+                    if norm_preserve:
+                        modified_weight = modify_tensor_norm_preserved(
+                            mlp_block.down_proj.weight,
+                            refusal_dir,
+                            scale,
+                        )
+                    else:
+                        modified_weight = modify_tensor(
+                            mlp_block.down_proj.weight,
+                            refusal_dir,
+                            scale,
+                        )
+                    mlp_block.down_proj.weight.copy_(modified_weight)
         
+        # Clean up
         del refusal_dir, harmless_dir
     
     if verbose:
@@ -186,7 +208,7 @@ def apply_ablation_to_model(
 
 def pre_tokenize_prompts(tokenizer, prompts, batch_size=8):
     """Pre-tokenize prompts into batches to save time during evaluation."""
-    batches = []
+    batches =[]
     for i in range(0, len(prompts), batch_size):
         batch = prompts[i:i+batch_size]
         formatted = [
@@ -204,29 +226,12 @@ def pre_tokenize_prompts(tokenizer, prompts, batch_size=8):
     return batches
 
 
-def precompute_base_logits(model, harmless_batches):
-    """Run once before the sweep to get the 'gold standard' distributions for KL Divergence."""
-    model.eval()
-    base_logits = []
-    
-    with torch.no_grad():
-        for inputs in harmless_batches:
-            inputs = {k: v.to(model.device) for k, v in inputs.items()}
-            outputs = model(**inputs)
-            # Only need logits for the final token in the prompt
-            next_token_logits = outputs.logits[:, -1, :]
-            # Convert to probabilities (targets for KL Div)
-            base_probs = torch.nn.functional.softmax(next_token_logits, dim=-1)
-            # Move to CPU to save VRAM
-            base_logits.append(base_probs.cpu()) 
-            
-    return base_logits
-
-
-def calculate_refusal_and_kl(model, tokenizer, harmful_batches, harmless_batches, base_harmless_probs, max_tokens=50):
+def calculate_refusal_score(model, tokenizer, harmful_batches, harmless_batches, max_tokens=50):
     """
-    Calculate refusal rate via generation, and capability via KL Divergence against base model.
-    Lower is better for both metrics.
+    Calculate refusal score: lower is better (fewer refusals).
+    
+    Returns:
+        tuple: (refusal_rate, capability_score)
     """
     model.eval()
     refusal_pattern = re.compile(
@@ -235,7 +240,7 @@ def calculate_refusal_and_kl(model, tokenizer, harmful_batches, harmless_batches
         r"harmful|dangerous|illegal|unethical|i don't|i won't|i will not"
     )
     
-    # 1. Test harmful prompts for refusal rate (generation required)
+    # Test harmful prompts for refusal
     refusals = 0
     total_harmful = sum(batch['input_ids'].shape[0] for batch in harmful_batches)
     
@@ -253,30 +258,41 @@ def calculate_refusal_and_kl(model, tokenizer, harmful_batches, harmless_batches
         responses = tokenizer.batch_decode(outputs[:, inputs['input_ids'].shape[1]:], skip_special_tokens=True)
         
         for response in responses:
-            if refusal_pattern.search(response.lower()):
+            response_lower = response.lower()
+            if refusal_pattern.search(response_lower):
                 refusals += 1
     
     refusal_rate = (refusals / total_harmful) * 100 if total_harmful > 0 else 0
     
-    # 2. Test harmless prompts for KL Divergence (single forward pass only, much faster)
-    kl_scores = []
+    # Test harmless prompts for capability preservation
+    capability_scores = []
+    total_harmless = sum(batch['input_ids'].shape[0] for batch in harmless_batches)
     
-    with torch.no_grad():
-        for i, inputs in enumerate(harmless_batches):
-            inputs = {k: v.to(model.device) for k, v in inputs.items()}
-            
-            outputs = model(**inputs)
-            ablated_logits = outputs.logits[:, -1, :]
-            
-            ablated_log_probs = torch.nn.functional.log_softmax(ablated_logits, dim=-1)
-            target_probs = base_harmless_probs[i].to(model.device)
-            
-            kl_div = torch.nn.functional.kl_div(ablated_log_probs, target_probs, reduction='batchmean')
-            kl_scores.append(kl_div.item())
+    for inputs in harmless_batches:
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+        
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        
+        responses = tokenizer.batch_decode(outputs[:, inputs['input_ids'].shape[1]:], skip_special_tokens=True)
+        
+        for response in responses:
+            unique_words = len(set(response.lower().split()))
+            if unique_words > 5:
+                capability_scores.append(1.0)
+            elif unique_words > 2:
+                capability_scores.append(0.5)
+            else:
+                capability_scores.append(0.0)
     
-    mean_kl_div = sum(kl_scores) / len(kl_scores) if kl_scores else 0
+    capability_score = sum(capability_scores) / len(capability_scores) if capability_scores else 0
     
-    return refusal_rate, mean_kl_div
+    return refusal_rate, capability_score
 
 
 def get_model_state_backup(model, start_layer, end_layer):
@@ -291,10 +307,15 @@ def get_model_state_backup(model, start_layer, end_layer):
     
     for idx in range(start_layer, end_layer + 1):
         layer = layer_base.layers[idx]
+        # Handle different attention architectures
         if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'o_proj'):
             state[f'layer_{idx}_self_attn_o_proj'] = layer.self_attn.o_proj.weight.data.cpu().clone()
+        
+        # Handle linear attention (Qwen3.5 specific)
         if hasattr(layer, 'linear_attn') and hasattr(layer.linear_attn, 'out_proj'):
             state[f'layer_{idx}_linear_attn_out_proj'] = layer.linear_attn.out_proj.weight.data.cpu().clone()
+        
+        # Handle different MLP architectures
         if hasattr(layer, 'mlp') and hasattr(layer.mlp, 'down_proj'):
             state[f'layer_{idx}_mlp_down_proj'] = layer.mlp.down_proj.weight.data.cpu().clone()
         elif hasattr(layer, 'ffn') and hasattr(layer.ffn, 'down_proj'):
@@ -352,12 +373,12 @@ def run_single_scan(
     scale: float = 1.0,
     source_layer: int = None,
 ) -> dict:
-    """Run a single scan configuration and return results."""
+    """
+    Run a single scan configuration and return results.
+    """
     print(f"\n=== Scanning configuration ({start_layer}, {end_layer}) ===")
 
-    print("Pre-computing base model logits...")
-    base_harmless_probs = precompute_base_logits(model, harmless_batches)
-
+    # Apply abliteration
     apply_ablation_to_model(
         model=model,
         measures=measures,
@@ -370,36 +391,39 @@ def run_single_scan(
         verbose=True
     )
 
-    print("Evaluating refusal removal and KL Divergence...")
-    refusal_rate, kl_divergence = calculate_refusal_and_kl(
-        model, tokenizer, harmful_batches, harmless_batches, base_harmless_probs, max_tokens=max_tokens
+    # Evaluate
+    print("Evaluating refusal removal...")
+    refusal_rate, capability_score = calculate_refusal_score(
+        model, tokenizer, harmful_batches, harmless_batches, max_tokens=max_tokens
     )
 
     print(f"Refusal rate: {refusal_rate:.2f}%")
-    print(f"KL Divergence: {kl_divergence:.4f}")
-
-    combined_score = refusal_rate + (kl_divergence * 100)
+    print(f"Capability score: {capability_score:.2f}")
 
     return {
         "start_layer": start_layer,
         "end_layer": end_layer,
         "refusal_rate": refusal_rate,
-        "kl_divergence": kl_divergence,
-        "combined_score": combined_score,
+        "capability_score": capability_score,
+        "combined_score": refusal_rate - (1 - capability_score) * 50,
     }
 
 
 def run_config_batch_worker(args):
-    """Worker function to run a batch of configurations on a specific GPU."""
+    """
+    Worker function to run a batch of configurations on a specific GPU.
+    """
     (config_batch, model_path, measurements_path, harmful_batches,
      harmless_batches, gpu_id, norm_preserve, projected, max_tokens,
      flash_attn, scale, source_layer) = args
     
+    # Suppress HuggingFace logging to avoid breaking tqdm
     os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '1'
     os.environ['TRANSFORMERS_VERBOSITY'] = 'error'
     import transformers
     transformers.logging.set_verbosity_error()
     
+    # Dynamically set device for this worker (CUDA or XPU)
     if hasattr(torch, "xpu") and torch.xpu.is_available():
         device_type = "xpu"
         device = f"xpu:{gpu_id}"
@@ -409,9 +433,13 @@ def run_config_batch_worker(args):
         device = f"cuda:{gpu_id}"
         torch.cuda.set_device(gpu_id)
     
+    # Load measurements
     measures = torch.load(measurements_path, map_location=device)
+    
+    # Set flash attention implementation
     attn_impl = "flash_attention_2" if flash_attn else None
     
+    # Load model on this GPU
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.float16,
@@ -420,47 +448,56 @@ def run_config_batch_worker(args):
     )
     tokenizer = AutoTokenizer.from_pretrained(model_path, padding=True)
     
-    # Pre-compute baseline for this worker GPU
-    base_harmless_probs = precompute_base_logits(model, harmless_batches)
+    results =[]
     
-    results = []
-    
+    # position=gpu_id stacks the progress bars cleanly
     with tqdm(config_batch, desc=f"GPU {gpu_id}", position=gpu_id, leave=True) as pbar:
         for start, end in pbar:
+            # Save original state for the layers we are about to modify
             state = get_model_state_backup(model, start, end)
             
+            # Apply abliteration (silently, to not flood terminal)
             apply_ablation_to_model(
-                model=model, measures=measures, start_layer=start, end_layer=end,
-                norm_preserve=norm_preserve, projected=projected, scale=scale,
-                source_layer=source_layer, verbose=False
+                model=model,
+                measures=measures,
+                start_layer=start,
+                end_layer=end,
+                norm_preserve=norm_preserve,
+                projected=projected,
+                scale=scale,
+                source_layer=source_layer,
+                verbose=False
             )
             
-            refusal_rate, kl_divergence = calculate_refusal_and_kl(
-                model, tokenizer, harmful_batches, harmless_batches, base_harmless_probs, max_tokens=max_tokens
+            # Evaluate
+            refusal_rate, capability_score = calculate_refusal_score(
+                model, tokenizer, harmful_batches, harmless_batches, max_tokens=max_tokens
             )
             
-            combined_score = refusal_rate + (kl_divergence * 100)
+            combined_score = refusal_rate - (1 - capability_score) * 50
             
-            log_msg = f"[GPU {gpu_id}] Abliterated layers {start:>2}-{end:<2} | Refusal: {refusal_rate:>5.1f}% | KL Div: {kl_divergence:.4f}"
+            # Cleanly write the log above the progress bar
+            log_msg = f"[GPU {gpu_id}] Abliterated layers {start:>2}-{end:<2} | Refusal: {refusal_rate:>5.1f}% | Capability: {capability_score:.2f}"
             tqdm.write(log_msg)
             
             pbar.set_postfix({
                 "cfg": f"{start}-{end}",
                 "refusal": f"{refusal_rate:.1f}%",
-                "kl": f"{kl_divergence:.4f}"
+                "cap": f"{capability_score:.2f}"
             })
             
             results.append({
                 "start_layer": start,
                 "end_layer": end,
                 "refusal_rate": refusal_rate,
-                "kl_divergence": kl_divergence,
+                "capability_score": capability_score,
                 "combined_score": combined_score,
             })
             
+            # Restore original state (silently)
             restore_model_state(model, state, verbose=False)
     
-    del model, tokenizer, measures, base_harmless_probs
+    del model, tokenizer, measures
     if device_type == "xpu":
         torch.xpu.empty_cache()
     else:
@@ -484,8 +521,11 @@ def run_parallel_sweep(
     scale: float = 1.0,
     source_layer: int = None,
 ) -> dict:
-    """Run a full sweep across multiple GPUs in parallel."""
-    all_configs = []
+    """
+    Run a full sweep across multiple GPUs in parallel.
+    """
+    # Generate all configurations
+    all_configs =[]
     for start in range(num_layers):
         for end in range(start + 1, num_layers):
             all_configs.append((start, end))
@@ -494,32 +534,49 @@ def run_parallel_sweep(
     print(f"Total configurations: {total_configs}")
     print(f"Distributing across {num_gpus} GPUs...\n")
     
+    # Split configurations across GPUs
     configs_per_gpu = (total_configs + num_gpus - 1) // num_gpus
-    gpu_configs = []
+    gpu_configs =[]
     for gpu_id in range(num_gpus):
         start_idx = gpu_id * configs_per_gpu
         end_idx = min(start_idx + configs_per_gpu, total_configs)
         gpu_configs.append(all_configs[start_idx:end_idx])
     
+    # Prepare worker arguments
     worker_args = [
         (
-            gpu_configs[gpu_id], model_path, measurements_path, harmful_batches, harmless_batches,
-            gpu_id, norm_preserve, projected, max_tokens, flash_attn, scale, source_layer,
+            gpu_configs[gpu_id],
+            model_path,
+            measurements_path,
+            harmful_batches,
+            harmless_batches,
+            gpu_id,
+            norm_preserve,
+            projected,
+            max_tokens,
+            flash_attn,
+            scale,
+            source_layer,
         )
         for gpu_id in range(num_gpus)
     ]
     
+    # Use spawn method for CUDA compatibility
     mp.set_start_method('spawn', force=True)
+    
     with mp.Pool(processes=num_gpus) as pool:
         all_results = pool.map(run_config_batch_worker, worker_args)
     
+    # Push cursor past the multi-line progress bars
     print("\n" * num_gpus)
     
+    # Merge results
     results = {}
     for gpu_results in all_results:
         for result in gpu_results:
             results[(result["start_layer"], result["end_layer"])] = result
     
+    # Save final results
     json_results = {f"{k[0]}_{k[1]}": v for k, v in results.items()}
     with open(os.path.join(output_dir, "sweep_results.json"), "w") as f:
         json.dump(json_results, f, indent=2)
@@ -542,52 +599,64 @@ def run_full_sweep(
     scale: float = 1.0,
     source_layer: int = None,
 ) -> dict:
-    """Run a full sweep of all layer configurations."""
+    """
+    Run a full sweep of all layer configurations.
+    """
     results = {}
     
-    print("Pre-computing base model logits for KL Divergence...")
-    base_harmless_probs = precompute_base_logits(model, harmless_batches)
-    
+    # Sweep all valid (i, j) pairs where i < j
     total_configs = num_layers * (num_layers - 1) // 2
     print(f"Running full sweep: {total_configs} configurations\n")
     
     with tqdm(total=total_configs, desc="Full Sweep") as pbar:
         for start in range(num_layers):
             for end in range(start + 1, num_layers):
+                # Save original state for the layers we are about to modify
                 state = get_model_state_backup(model, start, end)
                 
+                # Run scan (silently)
                 apply_ablation_to_model(
-                    model=model, measures=measures, start_layer=start, end_layer=end,
-                    norm_preserve=norm_preserve, projected=projected, scale=scale,
-                    source_layer=source_layer, verbose=False
+                    model=model,
+                    measures=measures,
+                    start_layer=start,
+                    end_layer=end,
+                    norm_preserve=norm_preserve,
+                    projected=projected,
+                    scale=scale,
+                    source_layer=source_layer,
+                    verbose=False
                 )
                 
-                refusal_rate, kl_divergence = calculate_refusal_and_kl(
-                    model, tokenizer, harmful_batches, harmless_batches, base_harmless_probs, max_tokens=max_tokens
+                refusal_rate, capability_score = calculate_refusal_score(
+                    model, tokenizer, harmful_batches, harmless_batches, max_tokens=max_tokens
                 )
                 
-                combined_score = refusal_rate + (kl_divergence * 100)
+                combined_score = refusal_rate - (1 - capability_score) * 50
                 
-                log_msg = f"Abliterated layers {start:>2}-{end:<2} | Refusal: {refusal_rate:>5.1f}% | KL Div: {kl_divergence:.4f}"
+                # Cleanly write the log above the progress bar
+                log_msg = f"Abliterated layers {start:>2}-{end:<2} | Refusal: {refusal_rate:>5.1f}% | Capability: {capability_score:.2f}"
                 tqdm.write(log_msg)
                 
                 results[(start, end)] = {
                     "start_layer": start,
                     "end_layer": end,
                     "refusal_rate": refusal_rate,
-                    "kl_divergence": kl_divergence,
+                    "capability_score": capability_score,
                     "combined_score": combined_score,
                 }
                 
+                # Restore original state before next iteration (silently)
                 restore_model_state(model, state, verbose=False)
                 
+                # Update progress bar
                 pbar.set_postfix({
                     "cfg": f"{start}-{end}",
                     "refusal": f"{refusal_rate:.1f}%",
-                    "kl": f"{kl_divergence:.4f}"
+                    "cap": f"{capability_score:.2f}"
                 })
                 pbar.update(1)
                 
+                # Save intermediate results (convert tuple keys to strings for JSON)
                 json_results = {f"{k[0]}_{k[1]}": v for k, v in results.items()}
                 with open(os.path.join(output_dir, "sweep_results.json"), "w") as f:
                     json.dump(json_results, f, indent=2)
@@ -600,32 +669,34 @@ def generate_heatmap_visualization(results: dict, output_dir: str, num_layers: i
     import matplotlib.pyplot as plt
     import numpy as np
     
+    # Create matrices for heatmaps
     refusal_matrix = np.full((num_layers, num_layers), np.nan)
-    kl_matrix = np.full((num_layers, num_layers), np.nan)
+    capability_matrix = np.full((num_layers, num_layers), np.nan)
     combined_matrix = np.full((num_layers, num_layers), np.nan)
     
     for (start, end), result in results.items():
         refusal_matrix[start, end] = result["refusal_rate"]
-        kl_matrix[start, end] = result["kl_divergence"]
+        capability_matrix[start, end] = result["capability_score"]
         combined_matrix[start, end] = result["combined_score"]
     
+    # Create figure with subplots
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
     
-    # Refusal rate heatmap (Lower is better)
+    # Refusal rate heatmap (lower is better - use reverse colormap)
     im1 = axes[0].imshow(refusal_matrix, cmap='RdYlGn_r', aspect='auto')
     axes[0].set_title('Refusal Rate (Lower is Better)')
     axes[0].set_xlabel('End Layer (j)')
     axes[0].set_ylabel('Start Layer (i)')
     plt.colorbar(im1, ax=axes[0])
     
-    # KL Divergence heatmap (Lower is better -> reverse colormap compared to old score)
-    im2 = axes[1].imshow(kl_matrix, cmap='RdYlGn_r', aspect='auto')
-    axes[1].set_title('KL Divergence (Lower is Better)')
+    # Capability score heatmap (higher is better)
+    im2 = axes[1].imshow(capability_matrix, cmap='RdYlGn', aspect='auto')
+    axes[1].set_title('Capability Score (Higher is Better)')
     axes[1].set_xlabel('End Layer (j)')
     axes[1].set_ylabel('Start Layer (i)')
     plt.colorbar(im2, ax=axes[1])
     
-    # Combined score heatmap (Lower is better)
+    # Combined score heatmap (lower is better)
     im3 = axes[2].imshow(combined_matrix, cmap='RdYlGn_r', aspect='auto')
     axes[2].set_title('Combined Score (Lower is Better)')
     axes[2].set_xlabel('End Layer (j)')
@@ -643,14 +714,14 @@ def generate_heatmap_visualization(results: dict, output_dir: str, num_layers: i
     print(f"{'='*60}")
     print(f"Layers: {best_config[0][0]} to {best_config[0][1]}")
     print(f"Refusal rate: {best_config[1]['refusal_rate']:.2f}%")
-    print(f"KL Divergence: {best_config[1]['kl_divergence']:.4f}")
+    print(f"Capability score: {best_config[1]['capability_score']:.2f}")
     print(f"Combined score: {best_config[1]['combined_score']:.2f}")
     print(f"{'='*60}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Refusal Circuit Scanner (Fast) - Identify refusal circuits in LLMs using KL Divergence"
+        description="Refusal Circuit Scanner (Fast) - Identify refusal circuits in LLMs"
     )
     
     parser.add_argument("--model", "-m", type=str, required=True, help="Model path or HuggingFace ID")
@@ -665,7 +736,7 @@ def main():
     parser.add_argument("--normpreserve", action="store_true", default=True, help="Use norm-preserving ablation")
     parser.add_argument("--projected", action="store_true", default=True, help="Use projected ablation")
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size for evaluation")
-    parser.add_argument("--max-tokens", type=int, default=50, help="Max tokens to generate for refusal test")
+    parser.add_argument("--max-tokens", type=int, default=50, help="Max tokens to generate per prompt (lower = faster)")
     parser.add_argument("--flash-attn", action="store_true", default=False, help="Use Flash Attention 2")
     parser.add_argument("--num-gpus", type=int, default=1, help="Number of GPUs for parallel sweep (default: 1)")
     parser.add_argument("--scale", type=float, default=1.0, help="Scale factor for ablation (default: 1.0)")
@@ -673,8 +744,10 @@ def main():
     
     args = parser.parse_args()
     
+    # Create output directory
     os.makedirs(args.output, exist_ok=True)
     
+    # Load measurements
     print(f"Loading measurements from {args.measurements}...")
     measures = torch.load(args.measurements)
     num_layers = measures.get("layers", args.num_layers)
@@ -684,6 +757,7 @@ def main():
     
     print(f"Model has {num_layers} layers")
     
+    # Load prompt datasets
     if args.data_harmful:
         harmful_prompts = load_data(args.data_harmful)
     else:
@@ -694,18 +768,22 @@ def main():
     else:
         harmless_prompts = load_data("./data/harmless.parquet")
     
+    # Limit prompts for faster scanning
     harmful_prompts = harmful_prompts[:100]
     harmless_prompts = harmless_prompts[:100]
     
     print(f"Using {len(harmful_prompts)} harmful prompts and {len(harmless_prompts)} harmless prompts")
     
+    # Get device
     device = get_preferred_device()
     print(f"Using device: {device}")
     
+    # Set flash attention implementation
     attn_impl = "flash_attention_2" if args.flash_attn and device == "cuda" else None
     if attn_impl:
         print("Using Flash Attention 2 for faster inference")
     
+    # We need the tokenizer to pre-tokenize prompts
     print(f"Loading tokenizer {args.model}...")
     tokenizer = AutoTokenizer.from_pretrained(args.model, padding=True)
     
@@ -713,6 +791,7 @@ def main():
     harmful_batches = pre_tokenize_prompts(tokenizer, harmful_prompts, args.batch_size)
     harmless_batches = pre_tokenize_prompts(tokenizer, harmless_prompts, args.batch_size)
     
+    # Determine source layer once
     if args.source_layer is not None:
         source_layer = args.source_layer
         print(f"Using specified source layer: {source_layer}")
@@ -722,6 +801,7 @@ def main():
         print(f"Auto-detected best source layer: {source_layer}")
     
     if args.sweep and args.num_gpus > 1:
+        # Multi-GPU parallel sweep
         print(f"\n{'='*60}")
         print("STARTING FULL SWEEP")
         print(f"{'='*60}")
@@ -742,8 +822,10 @@ def main():
             source_layer=source_layer,
         )
         
+        # Generate heatmap visualization
         generate_heatmap_visualization(results, args.output, num_layers)
     else:
+        # Load model ONCE (this is the key optimization)
         print(f"Loading model {args.model}...")
         model = AutoModelForCausalLM.from_pretrained(
             args.model,
@@ -754,10 +836,12 @@ def main():
         print("Model loaded successfully")
         
         if args.sweep:
+            # Run full sweep
             print(f"\n{'='*60}")
             print("STARTING FULL SWEEP")
             print(f"{'='*60}")
             
+            # Single-GPU sweep
             results = run_full_sweep(
                 model=model,
                 tokenizer=tokenizer,
@@ -773,9 +857,11 @@ def main():
                 source_layer=source_layer,
             )
             
+            # Generate heatmap visualization
             generate_heatmap_visualization(results, args.output, num_layers)
             
         elif args.start is not None and args.end is not None:
+            # Run single scan
             result = run_single_scan(
                 model=model,
                 tokenizer=tokenizer,
@@ -796,10 +882,11 @@ def main():
             print(f"{'='*60}")
             print(f"Layers: {result['start_layer']} to {result['end_layer']}")
             print(f"Refusal rate: {result['refusal_rate']:.2f}%")
-            print(f"KL Divergence: {result['kl_divergence']:.4f}")
+            print(f"Capability score: {result['capability_score']:.2f}")
             print(f"Combined score: {result['combined_score']:.2f}")
             print(f"{'='*60}")
             
+            # Save result
             with open(os.path.join(args.output, "scan_result.json"), "w") as f:
                 json.dump(result, f, indent=2)
         
