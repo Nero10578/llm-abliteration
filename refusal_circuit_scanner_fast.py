@@ -1004,6 +1004,7 @@ def main():
     parser.add_argument("--output", "-o", type=str, required=True, help="Output directory for results")
     parser.add_argument("--data-harmful", type=str, default=None, help="Harmful prompts file")
     parser.add_argument("--data-harmless", type=str, default=None, help="Harmless prompts file (for KL divergence)")
+    parser.add_argument("--mmlu-count", type=int, default=32, help="Number of MMLU-Pro questions to use (default: 32)")
     parser.add_argument("--start", type=int, default=None, help="Start layer for single scan")
     parser.add_argument("--end", type=int, default=None, help="End layer for single scan")
     parser.add_argument("--sweep", action="store_true", help="Run full sweep of all layer configurations")
@@ -1048,7 +1049,7 @@ def main():
     harmless_prompts = harmless_prompts[:20] # Small batch for KL divergence
     
     # Load MMLU-Pro subset
-    mmlu_subset = load_mmlu_pro_subset(num_questions=32)
+    mmlu_subset = load_mmlu_pro_subset(num_questions=args.mmlu_count)
     mmlu_prompts = [item["prompt"] for item in mmlu_subset]
     mmlu_answers = [item["answer"] for item in mmlu_subset]
     
