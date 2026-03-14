@@ -273,11 +273,11 @@ def pre_tokenize_prompts(tokenizer, prompts, batch_size=8, is_chat=True):
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.padding_side = 'left'
         inputs = tokenizer(formatted, padding=True, return_tensors="pt")
-        batches.append(inputs)
+        batches.append(dict(inputs))
     return batches
 
 
-def calculate_refusal_score(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=50, mmlu_max_tokens=2048):
+def calculate_refusal_score(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=50, mmlu_max_tokens=16384):
     """
     Calculate refusal score: lower is better (fewer refusals).
     
