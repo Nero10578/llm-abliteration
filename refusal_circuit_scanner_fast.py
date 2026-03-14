@@ -524,7 +524,7 @@ def run_config_batch_worker(args):
                 model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=max_tokens
             )
             
-            combined_score = refusal_rate - (1 - capability_score) * 50
+            combined_score = refusal_rate + ((1.0 - capability_score) * 100)
             
             # Cleanly write the log above the progress bar
             log_msg = f"[GPU {gpu_id}] Abliterated layers {start:>2}-{end:<2} | Refusal: {refusal_rate:>5.1f}% | Capability: {capability_score:.2f}"
@@ -684,7 +684,7 @@ def run_full_sweep(
                     model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=max_tokens
                 )
                 
-                combined_score = refusal_rate - (1 - capability_score) * 50
+                combined_score = refusal_rate + ((1.0 - capability_score) * 100)
                 
                 # Cleanly write the log above the progress bar
                 log_msg = f"Abliterated layers {start:>2}-{end:<2} | Refusal: {refusal_rate:>5.1f}% | Capability: {capability_score:.2f}"
