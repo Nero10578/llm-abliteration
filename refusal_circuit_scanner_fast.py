@@ -22,6 +22,11 @@ import json
 import os
 import re
 import torch
+import transformers
+import time
+import traceback
+import matplotlib.pyplot as plt
+import numpy as np
 import multiprocessing as mp
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -515,7 +520,7 @@ def run_config_batch_worker(args):
     # Suppress HuggingFace logging to avoid breaking tqdm
     os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '1'
     os.environ['TRANSFORMERS_VERBOSITY'] = 'error'
-    import transformers
+    
     transformers.logging.set_verbosity_error()
     
     # Dynamically set device for this worker (CUDA or XPU)
@@ -535,9 +540,6 @@ def run_config_batch_worker(args):
     attn_impl = "flash_attention_2" if flash_attn else None
     
     try:
-        import time
-        import traceback
-        
         # Load model on this GPU
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
@@ -824,9 +826,6 @@ def run_full_sweep(
 
 def generate_heatmap_visualization(results: dict, output_dir: str, num_layers: int):
     """Generate heatmap visualization from sweep results."""
-    import matplotlib.pyplot as plt
-    import numpy as np
-    
     # Create matrices for heatmaps
     refusal_matrix = np.full((num_layers, num_layers), np.nan)
     capability_matrix = np.full((num_layers, num_layers), np.nan)
@@ -983,7 +982,6 @@ def main():
         p.join()
         
         # Give the OS a moment to fully reclaim the GPU memory from the sanity check process
-        import time
         time.sleep(10)
         
         print(f"\n{'='*60}")
