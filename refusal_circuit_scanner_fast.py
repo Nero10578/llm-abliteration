@@ -285,12 +285,12 @@ def pre_tokenize_prompts(tokenizer, prompts, batch_size=8, is_chat=True):
     return batches
 
 
-def calculate_refusal_score(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=50, mmlu_max_tokens=10):
+def calculate_refusal_score(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, kl_batches=None, original_logits=None, max_tokens=50, mmlu_max_tokens=10):
     """
     Calculate refusal score: lower is better (fewer refusals).
     
     Returns:
-        tuple: (refusal_rate, capability_score)
+        tuple: (refusal_rate, capability_score, kl_div)
     """
     model.eval()
     refusal_pattern = re.compile(
@@ -349,7 +349,41 @@ def calculate_refusal_score(model, tokenizer, harmful_batches, mmlu_batches, mml
             
     capability_score = correct / total_mmlu if total_mmlu > 0 else 0
     
-    return refusal_rate, capability_score
+    # Calculate KL Divergence if batches and original logits are provided
+    kl_div = 0.0
+    if kl_batches is not None and original_logits is not None:
+        total_kl = 0.0
+        batch_idx = 0
+        
+        for inputs in kl_batches:
+            inputs = {k: v.to(model.device) for k, v in inputs.items()}
+            
+            with torch.no_grad():
+                outputs = model(**inputs)
+                logits = outputs.logits
+                
+                # Get original logits for this batch
+                orig_logits = original_logits[batch_idx].to(model.device)
+                
+                # Calculate KL divergence
+                # KL(P || Q) = sum(P * log(P/Q)) where P is original, Q is current
+                # We use log_softmax for numerical stability
+                p_log_probs = torch.nn.functional.log_softmax(orig_logits, dim=-1)
+                q_log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
+                
+                # KLDivLoss expects input in log-space and target in prob-space
+                # But we can just compute it manually: sum(exp(p_log_probs) * (p_log_probs - q_log_probs))
+                p_probs = torch.exp(p_log_probs)
+                kl = torch.sum(p_probs * (p_log_probs - q_log_probs), dim=-1)
+                
+                # Average over sequence length and batch
+                total_kl += kl.mean().item()
+                
+            batch_idx += 1
+            
+        kl_div = total_kl / len(kl_batches) if len(kl_batches) > 0 else 0.0
+    
+    return refusal_rate, capability_score, kl_div
 
 
 def get_model_state_backup(model, start_layer, end_layer):
@@ -416,22 +450,37 @@ def restore_model_state(model, state, verbose: bool = True):
         print("Restored model to original state")
 
 
-def run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, output_dir, max_tokens=50):
+def run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, kl_batches, output_dir, max_tokens=50):
     print(f"\n{'='*60}")
     print("RUNNING INITIAL SANITY CHECK (NO ABLITERATION)")
     print(f"{'='*60}")
     
-    refusal_rate, capability_score = calculate_refusal_score(
-        model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=max_tokens
+    # Compute original logits for KL divergence
+    original_logits = []
+    if kl_batches:
+        print("Computing original logits for KL divergence...")
+        for inputs in kl_batches:
+            inputs = {k: v.to(model.device) for k, v in inputs.items()}
+            with torch.no_grad():
+                outputs = model(**inputs)
+                original_logits.append(outputs.logits.cpu())
+        
+        # Save original logits
+        torch.save(original_logits, os.path.join(output_dir, "original_logits.pt"))
+    
+    refusal_rate, capability_score, kl_div = calculate_refusal_score(
+        model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, kl_batches, original_logits, max_tokens=max_tokens
     )
     
     print(f"Initial Refusal rate: {refusal_rate:.2f}%")
     print(f"Initial Capability score: {capability_score:.2f}")
+    print(f"Initial KL Divergence: {kl_div:.4f}")
     print(f"{'='*60}\n")
     
     result = {
         "refusal_rate": refusal_rate,
-        "capability_score": capability_score
+        "capability_score": capability_score,
+        "kl_div": kl_div
     }
     
     with open(os.path.join(output_dir, "sanity_check.json"), "w") as f:
@@ -441,7 +490,7 @@ def run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answe
 
 
 def run_sanity_check_process_worker(args):
-    model_path, harmful_batches, mmlu_batches, mmlu_answers, output_dir, max_tokens, flash_attn = args
+    model_path, harmful_batches, mmlu_batches, mmlu_answers, kl_batches, output_dir, max_tokens, flash_attn = args
     
     device = get_preferred_device()
     attn_impl = "flash_attention_2" if flash_attn and device == "cuda" else None
@@ -455,7 +504,7 @@ def run_sanity_check_process_worker(args):
     )
     tokenizer = AutoTokenizer.from_pretrained(model_path, padding=True)
     
-    run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, output_dir, max_tokens)
+    run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, kl_batches, output_dir, max_tokens)
 
 
 def run_single_scan(
@@ -472,6 +521,8 @@ def run_single_scan(
     max_tokens: int = 50,
     scale: float = 1.0,
     source_layer: int = None,
+    kl_batches: list = None,
+    original_logits: list = None,
 ) -> dict:
     """
     Run a single scan configuration and return results.
@@ -493,19 +544,21 @@ def run_single_scan(
 
     # Evaluate
     print("Evaluating refusal removal...")
-    refusal_rate, capability_score = calculate_refusal_score(
-        model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=max_tokens
+    refusal_rate, capability_score, kl_div = calculate_refusal_score(
+        model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, kl_batches, original_logits, max_tokens=max_tokens
     )
 
     print(f"Refusal rate: {refusal_rate:.2f}%")
     print(f"Capability score: {capability_score:.2f}")
+    print(f"KL Divergence: {kl_div:.4f}")
 
     return {
         "start_layer": start_layer,
         "end_layer": end_layer,
         "refusal_rate": refusal_rate,
         "capability_score": capability_score,
-        "combined_score": refusal_rate - (1 - capability_score) * 50,
+        "kl_div": kl_div,
+        "combined_score": refusal_rate + ((1.0 - capability_score) * 100) + (kl_div * 10),
     }
 
 
@@ -514,7 +567,7 @@ def run_config_batch_worker(args):
     Worker function to run a batch of configurations on a specific GPU.
     """
     (config_batch, model_path, measurements_path, harmful_batches,
-     mmlu_batches, mmlu_answers, gpu_id, norm_preserve, projected, max_tokens,
+     mmlu_batches, mmlu_answers, kl_batches, gpu_id, norm_preserve, projected, max_tokens,
      flash_attn, scale, source_layer, output_dir) = args
     
     # Suppress HuggingFace logging to avoid breaking tqdm
@@ -569,6 +622,12 @@ def run_config_batch_worker(args):
             except json.JSONDecodeError:
                 pass
                 
+        # Load original logits for KL divergence
+        original_logits = None
+        logits_path = os.path.join(output_dir, "original_logits.pt")
+        if os.path.exists(logits_path):
+            original_logits = torch.load(logits_path, map_location="cpu")
+            
         # Filter out already completed configurations
         pending_configs = []
         for start, end in config_batch:
@@ -576,7 +635,8 @@ def run_config_batch_worker(args):
             if key in existing_results:
                 res = existing_results[key]
                 results.append(res)
-                log_msg = f"[GPU {gpu_id}] Abliterated layers {start:>2}-{end:<2} | Refusal: {res['refusal_rate']:>5.1f}% | Capability: {res['capability_score']:.2f}"
+                kl_str = f" | KL: {res.get('kl_div', 0.0):.4f}" if 'kl_div' in res else ""
+                log_msg = f"[GPU {gpu_id}] Abliterated layers {start:>2}-{end:<2} | Refusal: {res['refusal_rate']:>5.1f}% | Capability: {res['capability_score']:.2f}{kl_str} | Combined: {res['combined_score']:.2f}"
                 print(log_msg)
             else:
                 pending_configs.append((start, end))
@@ -601,20 +661,21 @@ def run_config_batch_worker(args):
                 )
                 
                 # Evaluate
-                refusal_rate, capability_score = calculate_refusal_score(
-                    model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=max_tokens
+                refusal_rate, capability_score, kl_div = calculate_refusal_score(
+                    model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, kl_batches, original_logits, max_tokens=max_tokens
                 )
                 
-                combined_score = refusal_rate + ((1.0 - capability_score) * 100)
+                combined_score = refusal_rate + ((1.0 - capability_score) * 100) + (kl_div * 10)
                 
                 # Cleanly write the log above the progress bar
-                log_msg = f"[GPU {gpu_id}] Abliterated layers {start:>2}-{end:<2} | Refusal: {refusal_rate:>5.1f}% | Capability: {capability_score:.2f}"
+                log_msg = f"[GPU {gpu_id}] Abliterated layers {start:>2}-{end:<2} | Refusal: {refusal_rate:>5.1f}% | Capability: {capability_score:.2f} | KL: {kl_div:.4f} | Combined: {combined_score:.2f}"
                 tqdm.write(log_msg)
                 
                 pbar.set_postfix({
                     "cfg": f"{start}-{end}",
                     "refusal": f"{refusal_rate:.1f}%",
-                    "cap": f"{capability_score:.2f}"
+                    "cap": f"{capability_score:.2f}",
+                    "kl": f"{kl_div:.4f}"
                 })
                 
                 result_dict = {
@@ -622,6 +683,7 @@ def run_config_batch_worker(args):
                     "end_layer": end,
                     "refusal_rate": refusal_rate,
                     "capability_score": capability_score,
+                    "kl_div": kl_div,
                     "combined_score": combined_score,
                 }
                 results.append(result_dict)
@@ -657,6 +719,7 @@ def run_parallel_sweep(
     harmful_batches: list,
     mmlu_batches: list,
     mmlu_answers: list,
+    kl_batches: list,
     output_dir: str,
     num_layers: int,
     num_gpus: int,
@@ -697,6 +760,7 @@ def run_parallel_sweep(
             harmful_batches,
             mmlu_batches,
             mmlu_answers,
+            kl_batches,
             gpu_id,
             norm_preserve,
             projected,
@@ -762,6 +826,8 @@ def run_full_sweep(
     harmful_batches: list,
     mmlu_batches: list,
     mmlu_answers: list,
+    kl_batches: list,
+    original_logits: list,
     output_dir: str,
     num_layers: int,
     norm_preserve: bool = True,
@@ -799,7 +865,8 @@ def run_full_sweep(
         if key in existing_results:
             res = existing_results[key]
             results[(start, end)] = res
-            log_msg = f"Abliterated layers {start:>2}-{end:<2} | Refusal: {res['refusal_rate']:>5.1f}% | Capability: {res['capability_score']:.2f}"
+            kl_str = f" | KL: {res.get('kl_div', 0.0):.4f}" if 'kl_div' in res else ""
+            log_msg = f"Abliterated layers {start:>2}-{end:<2} | Refusal: {res['refusal_rate']:>5.1f}% | Capability: {res['capability_score']:.2f}{kl_str} | Combined: {res['combined_score']:.2f}"
             print(log_msg)
         else:
             pending_configs.append((start, end))
@@ -822,14 +889,14 @@ def run_full_sweep(
                     verbose=False
                 )
                 
-                refusal_rate, capability_score = calculate_refusal_score(
-                    model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=max_tokens
+                refusal_rate, capability_score, kl_div = calculate_refusal_score(
+                    model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, kl_batches, original_logits, max_tokens=max_tokens
                 )
                 
-                combined_score = refusal_rate + ((1.0 - capability_score) * 100)
+                combined_score = refusal_rate + ((1.0 - capability_score) * 100) + (kl_div * 10)
                 
                 # Cleanly write the log above the progress bar
-                log_msg = f"Abliterated layers {start:>2}-{end:<2} | Refusal: {refusal_rate:>5.1f}% | Capability: {capability_score:.2f}"
+                log_msg = f"Abliterated layers {start:>2}-{end:<2} | Refusal: {refusal_rate:>5.1f}% | Capability: {capability_score:.2f} | KL: {kl_div:.4f} | Combined: {combined_score:.2f}"
                 tqdm.write(log_msg)
                 
                 results[(start, end)] = {
@@ -837,6 +904,7 @@ def run_full_sweep(
                     "end_layer": end,
                     "refusal_rate": refusal_rate,
                     "capability_score": capability_score,
+                    "kl_div": kl_div,
                     "combined_score": combined_score,
                 }
                 
@@ -847,7 +915,8 @@ def run_full_sweep(
                 pbar.set_postfix({
                     "cfg": f"{start}-{end}",
                     "refusal": f"{refusal_rate:.1f}%",
-                    "cap": f"{capability_score:.2f}"
+                    "cap": f"{capability_score:.2f}",
+                    "kl": f"{kl_div:.4f}"
                 })
                 pbar.update(1)
                 
@@ -936,6 +1005,7 @@ def main():
     parser.add_argument("--measurements", type=str, required=True, help="Path to measurements file from measure.py")
     parser.add_argument("--output", "-o", type=str, required=True, help="Output directory for results")
     parser.add_argument("--data-harmful", type=str, default=None, help="Harmful prompts file")
+    parser.add_argument("--data-harmless", type=str, default=None, help="Harmless prompts file (for KL divergence)")
     parser.add_argument("--start", type=int, default=None, help="Start layer for single scan")
     parser.add_argument("--end", type=int, default=None, help="End layer for single scan")
     parser.add_argument("--sweep", action="store_true", help="Run full sweep of all layer configurations")
@@ -970,15 +1040,21 @@ def main():
     else:
         harmful_prompts = load_data("./data/harmful.parquet")
     
+    if args.data_harmless:
+        harmless_prompts = load_data(args.data_harmless)
+    else:
+        harmless_prompts = load_data("./data/harmless.parquet")
+        
     # Limit prompts for faster scanning
     harmful_prompts = harmful_prompts[:100]
+    harmless_prompts = harmless_prompts[:20] # Small batch for KL divergence
     
     # Load MMLU-Pro subset
     mmlu_subset = load_mmlu_pro_subset(num_questions=32)
     mmlu_prompts = [item["prompt"] for item in mmlu_subset]
     mmlu_answers = [item["answer"] for item in mmlu_subset]
     
-    print(f"Using {len(harmful_prompts)} harmful prompts and {len(mmlu_prompts)} MMLU-Pro questions")
+    print(f"Using {len(harmful_prompts)} harmful prompts, {len(mmlu_prompts)} MMLU-Pro questions, and {len(harmless_prompts)} harmless prompts for KL")
     
     # Get device
     device = get_preferred_device()
@@ -996,6 +1072,7 @@ def main():
     print("Pre-tokenizing prompts...")
     harmful_batches = pre_tokenize_prompts(tokenizer, harmful_prompts, args.batch_size, is_chat=True)
     mmlu_batches = pre_tokenize_prompts(tokenizer, mmlu_prompts, args.batch_size, is_chat=True)
+    kl_batches = pre_tokenize_prompts(tokenizer, harmless_prompts, args.batch_size, is_chat=True)
     
     # Determine source layer once
     if args.source_layer is not None:
@@ -1013,7 +1090,7 @@ def main():
         if not os.path.exists(sanity_file):
             # Run sanity check in a separate process to avoid CUDA initialization issues in the main process
             mp.set_start_method('spawn', force=True)
-            sanity_args = (args.model, harmful_batches, mmlu_batches, mmlu_answers, args.output, args.max_tokens, args.flash_attn)
+            sanity_args = (args.model, harmful_batches, mmlu_batches, mmlu_answers, kl_batches, args.output, args.max_tokens, args.flash_attn)
             p = mp.Process(target=run_sanity_check_process_worker, args=(sanity_args,))
             p.start()
             p.join()
@@ -1029,6 +1106,7 @@ def main():
             print(f"{'='*60}")
             print(f"Initial Refusal rate: {sanity_data.get('refusal_rate', 0):.2f}%")
             print(f"Initial Capability score: {sanity_data.get('capability_score', 0):.2f}")
+            print(f"Initial KL Divergence: {sanity_data.get('kl_div', 0.0):.4f}")
             print(f"{'='*60}\n")
         
         print(f"\n{'='*60}")
@@ -1041,6 +1119,7 @@ def main():
             harmful_batches=harmful_batches,
             mmlu_batches=mmlu_batches,
             mmlu_answers=mmlu_answers,
+            kl_batches=kl_batches,
             output_dir=args.output,
             num_layers=num_layers,
             num_gpus=args.num_gpus,
@@ -1067,9 +1146,15 @@ def main():
         
         sanity_file = os.path.join(args.output, "sanity_check.json")
         if not os.path.exists(sanity_file):
-            run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, args.output, max_tokens=args.max_tokens)
+            run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, kl_batches, args.output, max_tokens=args.max_tokens)
         else:
             print(f"\nFound existing sanity check at {sanity_file}, skipping...")
+            
+        # Load original logits for KL divergence
+        original_logits = None
+        logits_path = os.path.join(args.output, "original_logits.pt")
+        if os.path.exists(logits_path):
+            original_logits = torch.load(logits_path, map_location="cpu")
         
         if args.sweep:
             # Run full sweep
@@ -1085,6 +1170,8 @@ def main():
                 harmful_batches=harmful_batches,
                 mmlu_batches=mmlu_batches,
                 mmlu_answers=mmlu_answers,
+                kl_batches=kl_batches,
+                original_logits=original_logits,
                 output_dir=args.output,
                 num_layers=num_layers,
                 norm_preserve=args.normpreserve,
@@ -1108,6 +1195,8 @@ def main():
                 harmful_batches=harmful_batches,
                 mmlu_batches=mmlu_batches,
                 mmlu_answers=mmlu_answers,
+                kl_batches=kl_batches,
+                original_logits=original_logits,
                 norm_preserve=args.normpreserve,
                 projected=args.projected,
                 max_tokens=args.max_tokens,
