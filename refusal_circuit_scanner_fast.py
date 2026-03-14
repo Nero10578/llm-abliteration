@@ -411,7 +411,7 @@ def restore_model_state(model, state, verbose: bool = True):
         print("Restored model to original state")
 
 
-def run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=50):
+def run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, output_dir, max_tokens=50):
     print(f"\n{'='*60}")
     print("RUNNING INITIAL SANITY CHECK (NO ABLITERATION)")
     print(f"{'='*60}")
@@ -423,6 +423,15 @@ def run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answe
     print(f"Initial Refusal rate: {refusal_rate:.2f}%")
     print(f"Initial Capability score: {capability_score:.2f}")
     print(f"{'='*60}\n")
+    
+    result = {
+        "refusal_rate": refusal_rate,
+        "capability_score": capability_score
+    }
+    
+    with open(os.path.join(output_dir, "sanity_check.json"), "w") as f:
+        json.dump(result, f, indent=2)
+        
     return refusal_rate, capability_score
 
 
@@ -878,7 +887,7 @@ def main():
             device_map=device,
             attn_implementation=attn_impl,
         )
-        run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=args.max_tokens)
+        run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, args.output, max_tokens=args.max_tokens)
         del model
         clear_device_cache()
         
@@ -916,7 +925,7 @@ def main():
         )
         print("Model loaded successfully")
         
-        run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, max_tokens=args.max_tokens)
+        run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, args.output, max_tokens=args.max_tokens)
         
         if args.sweep:
             # Run full sweep
