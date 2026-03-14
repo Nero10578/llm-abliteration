@@ -547,10 +547,29 @@ def run_config_batch_worker(args):
         )
         tokenizer = AutoTokenizer.from_pretrained(model_path, padding=True)
         
-        results =[]
+        results = []
+        results_file = os.path.join(output_dir, f"sweep_results_gpu_{gpu_id}.json")
+        
+        # Load existing results to resume if crashed
+        existing_results = {}
+        if os.path.exists(results_file):
+            try:
+                with open(results_file, "r") as f:
+                    existing_results = json.load(f)
+            except json.JSONDecodeError:
+                pass
+                
+        # Filter out already completed configurations
+        pending_configs = []
+        for start, end in config_batch:
+            key = f"{start}_{end}"
+            if key in existing_results:
+                results.append(existing_results[key])
+            else:
+                pending_configs.append((start, end))
         
         # position=gpu_id stacks the progress bars cleanly
-        with tqdm(config_batch, desc=f"GPU {gpu_id}", position=gpu_id, leave=True) as pbar:
+        with tqdm(pending_configs, desc=f"GPU {gpu_id}", position=gpu_id, leave=True) as pbar:
             for start, end in pbar:
                 # Save original state for the layers we are about to modify
                 state = get_model_state_backup(model, start, end)
@@ -585,13 +604,19 @@ def run_config_batch_worker(args):
                     "cap": f"{capability_score:.2f}"
                 })
                 
-                results.append({
+                result_dict = {
                     "start_layer": start,
                     "end_layer": end,
                     "refusal_rate": refusal_rate,
                     "capability_score": capability_score,
                     "combined_score": combined_score,
-                })
+                }
+                results.append(result_dict)
+                
+                # Save incremental progress
+                existing_results[f"{start}_{end}"] = result_dict
+                with open(results_file, "w") as f:
+                    json.dump(existing_results, f, indent=2)
                 
                 # Restore original state (silently)
                 restore_model_state(model, state, verbose=False)
@@ -666,6 +691,7 @@ def run_parallel_sweep(
             flash_attn,
             scale,
             source_layer,
+            output_dir,
         )
         for gpu_id in range(num_gpus)
     ]
@@ -684,11 +710,33 @@ def run_parallel_sweep(
     for gpu_results in all_results:
         for result in gpu_results:
             results[(result["start_layer"], result["end_layer"])] = result
+            
+    # Also check for any partial files in case pool.map failed but files were written
+    for gpu_id in range(num_gpus):
+        results_file = os.path.join(output_dir, f"sweep_results_gpu_{gpu_id}.json")
+        if os.path.exists(results_file):
+            try:
+                with open(results_file, "r") as f:
+                    gpu_data = json.load(f)
+                    for key, val in gpu_data.items():
+                        start, end = map(int, key.split('_'))
+                        results[(start, end)] = val
+            except Exception:
+                pass
     
     # Save final results
     json_results = {f"{k[0]}_{k[1]}": v for k, v in results.items()}
     with open(os.path.join(output_dir, "sweep_results.json"), "w") as f:
         json.dump(json_results, f, indent=2)
+        
+    # Clean up partial files
+    for gpu_id in range(num_gpus):
+        results_file = os.path.join(output_dir, f"sweep_results_gpu_{gpu_id}.json")
+        if os.path.exists(results_file):
+            try:
+                os.remove(results_file)
+            except Exception:
+                pass
     
     print(f"\nCompleted {total_configs} configurations")
     return results
