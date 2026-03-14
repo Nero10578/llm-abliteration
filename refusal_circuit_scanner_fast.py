@@ -435,6 +435,24 @@ def run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answe
     return refusal_rate, capability_score
 
 
+def run_sanity_check_process_worker(args):
+    model_path, harmful_batches, mmlu_batches, mmlu_answers, output_dir, max_tokens, flash_attn = args
+    
+    device = get_preferred_device()
+    attn_impl = "flash_attention_2" if flash_attn and device == "cuda" else None
+    
+    print(f"Loading model {model_path} for sanity check...")
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        dtype=torch.float16,
+        device_map=device,
+        attn_implementation=attn_impl,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_path, padding=True)
+    
+    run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, output_dir, max_tokens)
+
+
 def run_single_scan(
     model,
     tokenizer,
@@ -519,7 +537,7 @@ def run_config_batch_worker(args):
     # Load model on this GPU
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        torch_dtype=torch.float16,
+        dtype=torch.float16,
         device_map=device,
         attn_implementation=attn_impl,
     )
@@ -880,16 +898,13 @@ def main():
     
     if args.sweep and args.num_gpus > 1:
         # Multi-GPU parallel sweep
-        print(f"Loading model {args.model} for sanity check...")
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model,
-            torch_dtype=torch.float16,
-            device_map=device,
-            attn_implementation=attn_impl,
-        )
-        run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, args.output, max_tokens=args.max_tokens)
-        del model
-        clear_device_cache()
+        
+        # Run sanity check in a separate process to avoid CUDA initialization issues in the main process
+        mp.set_start_method('spawn', force=True)
+        sanity_args = (args.model, harmful_batches, mmlu_batches, mmlu_answers, args.output, args.max_tokens, args.flash_attn)
+        p = mp.Process(target=run_sanity_check_process_worker, args=(sanity_args,))
+        p.start()
+        p.join()
         
         print(f"\n{'='*60}")
         print("STARTING FULL SWEEP")
@@ -919,7 +934,7 @@ def main():
         print(f"Loading model {args.model}...")
         model = AutoModelForCausalLM.from_pretrained(
             args.model,
-            torch_dtype=torch.float16,
+            dtype=torch.float16,
             device_map=device,
             attn_implementation=attn_impl,
         )
