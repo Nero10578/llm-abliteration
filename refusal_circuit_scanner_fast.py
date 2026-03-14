@@ -931,15 +931,18 @@ def generate_heatmap_visualization(results: dict, output_dir: str, num_layers: i
     # Create matrices for heatmaps
     refusal_matrix = np.full((num_layers, num_layers), np.nan)
     capability_matrix = np.full((num_layers, num_layers), np.nan)
+    kl_matrix = np.full((num_layers, num_layers), np.nan)
     combined_matrix = np.full((num_layers, num_layers), np.nan)
     
     for (start, end), result in results.items():
         refusal_matrix[start, end] = result["refusal_rate"]
         capability_matrix[start, end] = result["capability_score"]
+        if "kl_div" in result:
+            kl_matrix[start, end] = result["kl_div"]
         combined_matrix[start, end] = result["combined_score"]
     
     # Create figure with subplots
-    fig, axes = plt.subplots(1, 3, figsize=(24, 8))
+    fig, axes = plt.subplots(1, 4, figsize=(32, 8))
     
     # Helper function to format axes
     def format_axis(ax, title, im):
@@ -974,9 +977,13 @@ def generate_heatmap_visualization(results: dict, output_dir: str, num_layers: i
     im2 = axes[1].imshow(capability_matrix, cmap='RdYlGn', aspect='auto')
     format_axis(axes[1], 'Capability Score (Higher is Better)', im2)
     
+    # KL Divergence heatmap (lower is better)
+    im3 = axes[2].imshow(kl_matrix, cmap='RdYlGn_r', aspect='auto')
+    format_axis(axes[2], 'KL Divergence (Lower is Better)', im3)
+    
     # Combined score heatmap (lower is better)
-    im3 = axes[2].imshow(combined_matrix, cmap='RdYlGn_r', aspect='auto')
-    format_axis(axes[2], 'Combined Score (Lower is Better)', im3)
+    im4 = axes[3].imshow(combined_matrix, cmap='RdYlGn_r', aspect='auto')
+    format_axis(axes[3], 'Combined Score (Lower is Better)', im4)
     
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "refusal_circuit_heatmap.png"), dpi=300)
@@ -990,6 +997,8 @@ def generate_heatmap_visualization(results: dict, output_dir: str, num_layers: i
     print(f"Layers: {best_config[0][0]} to {best_config[0][1]}")
     print(f"Refusal rate: {best_config[1]['refusal_rate']:.2f}%")
     print(f"Capability score: {best_config[1]['capability_score']:.2f}")
+    if "kl_div" in best_config[1]:
+        print(f"KL Divergence: {best_config[1]['kl_div']:.4f}")
     print(f"Combined score: {best_config[1]['combined_score']:.2f}")
     print(f"{'='*60}")
 
