@@ -974,15 +974,19 @@ def main():
     if args.sweep and args.num_gpus > 1:
         # Multi-GPU parallel sweep
         
-        # Run sanity check in a separate process to avoid CUDA initialization issues in the main process
-        mp.set_start_method('spawn', force=True)
-        sanity_args = (args.model, harmful_batches, mmlu_batches, mmlu_answers, args.output, args.max_tokens, args.flash_attn)
-        p = mp.Process(target=run_sanity_check_process_worker, args=(sanity_args,))
-        p.start()
-        p.join()
-        
-        # Give the OS a moment to fully reclaim the GPU memory from the sanity check process
-        time.sleep(10)
+        sanity_file = os.path.join(args.output, "sanity_check.json")
+        if not os.path.exists(sanity_file):
+            # Run sanity check in a separate process to avoid CUDA initialization issues in the main process
+            mp.set_start_method('spawn', force=True)
+            sanity_args = (args.model, harmful_batches, mmlu_batches, mmlu_answers, args.output, args.max_tokens, args.flash_attn)
+            p = mp.Process(target=run_sanity_check_process_worker, args=(sanity_args,))
+            p.start()
+            p.join()
+            
+            # Give the OS a moment to fully reclaim the GPU memory from the sanity check process
+            time.sleep(10)
+        else:
+            print(f"\nFound existing sanity check at {sanity_file}, skipping...")
         
         print(f"\n{'='*60}")
         print("STARTING FULL SWEEP")
@@ -1018,7 +1022,11 @@ def main():
         )
         print("Model loaded successfully")
         
-        run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, args.output, max_tokens=args.max_tokens)
+        sanity_file = os.path.join(args.output, "sanity_check.json")
+        if not os.path.exists(sanity_file):
+            run_sanity_check(model, tokenizer, harmful_batches, mmlu_batches, mmlu_answers, args.output, max_tokens=args.max_tokens)
+        else:
+            print(f"\nFound existing sanity check at {sanity_file}, skipping...")
         
         if args.sweep:
             # Run full sweep

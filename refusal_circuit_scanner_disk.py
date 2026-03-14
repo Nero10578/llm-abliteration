@@ -1098,16 +1098,20 @@ def main():
     if args.sweep and args.num_gpus > 1:
         # Multi-GPU parallel sweep
         
-        # Run sanity check in a separate process to avoid CUDA initialization issues in the main process
-        mp.set_start_method('spawn', force=True)
-        sanity_args = (args.model, harmful_batches, mmlu_batches, mmlu_answers, args.output, args.max_tokens, args.flash_attn, args.quantization, tmp_base_dir)
-        p = mp.Process(target=run_sanity_check_process_worker, args=(sanity_args,))
-        p.start()
-        p.join()
-        
-        # Give the OS a moment to fully reclaim the GPU memory from the sanity check process
-        import time
-        time.sleep(10)
+        sanity_file = os.path.join(args.output, "sanity_check.json")
+        if not os.path.exists(sanity_file):
+            # Run sanity check in a separate process to avoid CUDA initialization issues in the main process
+            mp.set_start_method('spawn', force=True)
+            sanity_args = (args.model, harmful_batches, mmlu_batches, mmlu_answers, args.output, args.max_tokens, args.flash_attn, args.quantization, tmp_base_dir)
+            p = mp.Process(target=run_sanity_check_process_worker, args=(sanity_args,))
+            p.start()
+            p.join()
+            
+            # Give the OS a moment to fully reclaim the GPU memory from the sanity check process
+            import time
+            time.sleep(10)
+        else:
+            print(f"\nFound existing sanity check at {sanity_file}, skipping...")
         
         print(f"\n{'='*60}")
         print("STARTING FULL SWEEP")
@@ -1135,12 +1139,16 @@ def main():
         # Generate heatmap visualization
         generate_heatmap_visualization(results, args.output, num_layers)
     else:
-        # Run sanity check in a separate process to avoid CUDA initialization issues in the main process
-        mp.set_start_method('spawn', force=True)
-        sanity_args = (args.model, harmful_batches, mmlu_batches, mmlu_answers, args.output, args.max_tokens, args.flash_attn, args.quantization, tmp_base_dir)
-        p = mp.Process(target=run_sanity_check_process_worker, args=(sanity_args,))
-        p.start()
-        p.join()
+        sanity_file = os.path.join(args.output, "sanity_check.json")
+        if not os.path.exists(sanity_file):
+            # Run sanity check in a separate process to avoid CUDA initialization issues in the main process
+            mp.set_start_method('spawn', force=True)
+            sanity_args = (args.model, harmful_batches, mmlu_batches, mmlu_answers, args.output, args.max_tokens, args.flash_attn, args.quantization, tmp_base_dir)
+            p = mp.Process(target=run_sanity_check_process_worker, args=(sanity_args,))
+            p.start()
+            p.join()
+        else:
+            print(f"\nFound existing sanity check at {sanity_file}, skipping...")
         
         if args.sweep:
             # Run full sweep
