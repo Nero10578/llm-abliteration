@@ -629,7 +629,9 @@ def run_config_batch_worker(args):
         for start, end in config_batch:
             key = f"{start}_{end}"
             if key in existing_results:
-                results.append(existing_results[key])
+                res = existing_results[key]
+                results.append(res)
+                print(f"[GPU {gpu_id}] (Resumed) Abliterated layers {start:>2}-{end:<2} | Refusal: {res['refusal_rate']:>5.1f}% | Capability: {res['capability_score']:.2f}")
             else:
                 pending_configs.append((start, end))
         
