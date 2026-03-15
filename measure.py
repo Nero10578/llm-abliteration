@@ -398,12 +398,22 @@ if __name__ == "__main__":
 
     attn_impl = "flash_attention_2" if args.flash_attn and device == "cuda" else None
 
+    # Force max_memory to prevent CPU offloading
+    max_memory = None
+    if device == "cuda":
+        num_gpus = torch.cuda.device_count()
+        if num_gpus > 0:
+            # Tell accelerate we have 90GB per GPU, and 0 bytes for CPU
+            max_memory = {i: "90GiB" for i in range(num_gpus)}
+            max_memory["cpu"] = "0GiB"
+
     if hasattr(model_config, "quantization_config"):
         model = AutoModelForCausalLM.from_pretrained(
             args.model,
 #            trust_remote_code=True,
             dtype=precision,
             device_map=device_map,
+            max_memory=max_memory,
             attn_implementation=attn_impl,
         )
     else:
@@ -413,6 +423,7 @@ if __name__ == "__main__":
             dtype=precision,
             low_cpu_mem_usage=True,
             device_map=device_map,
+            max_memory=max_memory,
             quantization_config=quant_config,
             attn_implementation=attn_impl,
         )
