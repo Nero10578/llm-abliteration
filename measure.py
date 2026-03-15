@@ -409,7 +409,7 @@ if __name__ == "__main__":
             # If we are doing 4-bit quantization, force device_map to be a dict
             # mapping everything to GPU 0 to bypass accelerate's auto-mapping
             if args.quant_measure == "4bit":
-                device_map = "auto"
+                device_map = "cuda:0,1"
 
     if hasattr(model_config, "quantization_config"):
         model = AutoModelForCausalLM.from_pretrained(
