@@ -13,7 +13,6 @@ from transformers import PreTrainedModel, PreTrainedTokenizer, PreTrainedTokeniz
 from utils.data import load_data
 from utils.models import has_tied_weights
 from utils.clip import magnitude_clip
-from utils.device import clear_device_cache, get_preferred_device, resolve_device_map, synchronize_device
 
 
 def welford_gpu_batched_multilayer_float32(
@@ -75,7 +74,7 @@ def welford_gpu_batched_multilayer_float32(
         )
         
         del batch_input, batch_mask
-        hidden_states = raw_output.hidden_states[max_new_tokens-1]  # Generation step
+        hidden_states = raw_output.hidden_states[0]  # First generation step
         del raw_output
 
         # Process layers with Welford in float32
@@ -100,15 +99,15 @@ def welford_gpu_batched_multilayer_float32(
             del current_hidden
 
         del hidden_states
-        clear_device_cache()
+        torch.cuda.empty_cache()
 
     # Cast back to model dtype and move to CPU
     return_dict = {
-        layer_idx: mean.to(device="cpu")
+        layer_idx: mean.to(device="cpu") 
         for layer_idx, mean in means.items()
     }
     del means
-    clear_device_cache()
+    torch.cuda.empty_cache()
     return return_dict
 
 def format_chats(
@@ -142,12 +141,11 @@ def compute_refusals(
     is_vision_model: bool = False,  # Add flag for vision models
 ) -> torch.Tensor:
     # dtype = model.dtype
-    if hasattr(model, "language_model"):
-        layer_base = model.language_model.model
-    else:
-        layer_base = model.model
-        if hasattr(layer_base, "language_model"):
-            layer_base = layer_base.language_model
+    layer_base = model.model
+    if hasattr(layer_base,"language_model"):
+        layer_base = layer_base.language_model
+    if not hasattr(layer_base, "layers"):
+        raise ValueError(f"Could not find layers in model structure. Model base: {type(layer_base)}")
     num_layers = len(layer_base.layers)
     pos = -1
     # option for layer sweep
@@ -155,10 +153,10 @@ def compute_refusals(
 
     harmful_formatted = format_chats(tokenizer=tokenizer, prompt_list=harmful_list, processor=processor)
     harmful_means = welford_gpu_batched_multilayer_float32(
-        harmful_formatted, "Generating harmful outputs", model, tokenizer,
+        harmful_formatted, "Generating harmful outputs", model, tokenizer, 
         focus_layers, pos, inference_batch_size, clip, processor, is_vision_model
     )
-    clear_device_cache()
+    torch.cuda.empty_cache()
     del harmful_formatted
     harmless_formatted = format_chats(tokenizer=tokenizer, prompt_list=harmless_list, processor=processor)
     harmless_means = welford_gpu_batched_multilayer_float32(
@@ -176,8 +174,7 @@ def compute_refusals(
         results[f'harmful_{layer}'] = harmful_mean
         harmless_mean = harmless_means[layer]
         results[f'harmless_{layer}'] = harmless_mean
-        # perform subtraction in 64-bit float to cope with high cosine similarity scenario
-        refusal_dir = (harmful_mean.double() - harmless_mean.double()).float()
+        refusal_dir = harmful_mean - harmless_mean
 
         if projected:
             # Compute Gram-Schmidt second orthogonal vector/direction to remove harmless direction interference from refusal direction
@@ -193,29 +190,9 @@ def compute_refusals(
 
         results[f'refuse_{layer}'] = refusal_dir
 
-    clear_device_cache()
+    torch.cuda.empty_cache()
     gc.collect()
     return results
-
-
-def clean_up() -> None:
-    """
-    Release VRAM/RAM after measurement is complete.
-
-    Call this after deleting model/tokenizer/results in your code:
-        del model, tokenizer, processor, results
-        clean_up()
-
-    Note: Callers must delete their own references to objects before calling
-    this function. Python's scoping rules mean we cannot delete caller's
-    variables from within a function.
-    """
-    gc.collect()
-    synchronize_device()
-    clear_device_cache()
-    gc.collect()  # Second pass for any refs broken by cache clear
-    print("Memory cleared successfully.")
-
 
 if __name__ == "__main__":
     parser = ArgumentParser(description="Measure models for analysis and abliteration")
@@ -286,7 +263,13 @@ if __name__ == "__main__":
         "--max-memory",
         type=str,
         default=None,
-        help="Max memory per GPU (e.g., '90GiB'). Prevents CPU offload issues with 4-bit quantization.",
+        help="Maximum memory per GPU in GB (e.g., '10' for 10GB, or '0:10,1:15' for multi-GPU)",
+    )
+    parser.add_argument(
+        "--cpu-memory",
+        type=str,
+        default="1000",
+        help="Maximum CPU memory in GB for model offloading (default: 1000GB)",
     )
 
     args = parser.parse_args()
@@ -300,9 +283,6 @@ if __name__ == "__main__":
     torch.inference_mode()
     torch.set_grad_enabled(False)
 
-    device = get_preferred_device()
-    device_map = resolve_device_map()
-
     model = args.model
     model_config = AutoConfig.from_pretrained(model)
     model_type = getattr(model_config,"model_type")
@@ -313,14 +293,9 @@ if __name__ == "__main__":
     elif hasattr(model_config, "dtype") and model_config.dtype is not None:
         precision = model_config.dtype
     else:
-        # Fallback to bfloat16 on CUDA (if supported), otherwise float32 on MPS/CPU, float16 on CUDA
-        if device == "cuda" and torch.cuda.is_bf16_supported():
-            precision = torch.bfloat16
-        elif device == "cuda":
-            precision = torch.float16
-        else:
-            precision = torch.float32
-
+        # Fallback to bfloat16 if available, otherwise float16
+        precision = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    
     # Convert string dtype to torch dtype if needed
     if isinstance(precision, str):
         dtype_map = {
@@ -331,10 +306,7 @@ if __name__ == "__main__":
             "bf16": torch.bfloat16,
             "fp32": torch.float32,
         }
-        precision = dtype_map.get(
-            precision,
-            torch.bfloat16 if device == "cuda" and torch.cuda.is_bf16_supported() else torch.float32,
-        )
+        precision = dtype_map.get(precision, torch.bfloat16)
 
     has_vision = False
     if hasattr(model_config,"vision_config"):
@@ -345,17 +317,10 @@ if __name__ == "__main__":
 
     quant_config = None
     qbit = args.quant_measure
-
-    if device == "mps" and qbit:
-        print("BitsAndBytes quantization is not supported on MPS; disabling requested quantization.")
-        qbit = None
-
     # autodetect BitsAndBytes quant; overrides option
     if hasattr(model_config,"quantization_config"):
         bnb_config = getattr(model_config, "quantization_config")
         if (bnb_config["load_in_4bit"] == True):
-            if device == "mps":
-                raise RuntimeError("BitsAndBytes 4-bit models are not supported on MPS. Please use CPU/CUDA or load full-precision weights.")
             qbit = "4bit"
             # Override precision with compute dtype from quant config if available
             if "bnb_4bit_compute_dtype" in bnb_config and bnb_config["bnb_4bit_compute_dtype"]:
@@ -367,8 +332,6 @@ if __name__ == "__main__":
                     precision = compute_dtype
                 print(f"Using compute dtype from quant config: {precision}")
         elif (bnb_config["load_in_8bit"] == True):
-            if device == "mps":
-                raise RuntimeError("BitsAndBytes 8-bit models are not supported on MPS. Please use CPU/CUDA or load full-precision weights.")
             qbit = "8bit"
 
     if qbit == "4bit":
@@ -380,7 +343,7 @@ if __name__ == "__main__":
     elif qbit == "8bit":
         quant_config = BitsAndBytesConfig(
             load_in_8bit=True,
-            llm_int8_enable_fp32_cpu_offload=True,
+#            llm_int8_enable_fp32_cpu_offload=True,
 #            llm_int8_has_fp16_weight=True,
         )    
 
@@ -397,45 +360,67 @@ if __name__ == "__main__":
         deccp_list = load_dataset("augmxnt/deccp", split="censored")
         harmful_list += deccp_list["text"]
 
-    attn_impl = "flash_attention_2" if args.flash_attn and device == "cuda" else None
-
+    # Configure device mapping with CPU offloading
+    max_memory = None
+    
+    if args.max_memory:
+        # Parse max_memory argument (e.g., "10" or "0:10,1:15")
+        try:
+            if ":" in args.max_memory:
+                # Multi-GPU format: "0:10,1:15"
+                max_memory = {}
+                for gpu_mem in args.max_memory.split(","):
+                    gpu_id, mem_gb = gpu_mem.split(":")
+                    max_memory[int(gpu_id)] = f"{mem_gb}GB"
+            else:
+                # Single GPU format: "10"
+                max_memory = {0: f"{args.max_memory}GB"}
+            print(f"Max memory per GPU set to: {max_memory}")
+        except Exception as e:
+            print(f"Invalid max_memory format: {e}. Using default.")
+            max_memory = None
+    
+    # Add CPU memory to max_memory to enable CPU offloading
+    if max_memory is None:
+        max_memory = {}
+    max_memory['cpu'] = f"{args.cpu_memory}GB"  # Allow CPU offloading with configurable limit
+    print(f"Device memory limits with CPU: {max_memory}")
+    
+    # Use device_map="auto" with max_memory including CPU
     if hasattr(model_config, "quantization_config"):
         model = AutoModelForCausalLM.from_pretrained(
             args.model,
-#            trust_remote_code=True,
+            trust_remote_code=True,
+            dtype=precision,
+            device_map="auto",
+            max_memory=max_memory,
+            low_cpu_mem_usage=True,
             torch_dtype=precision,
-            device_map=device_map,
-            attn_implementation=attn_impl,
+            attn_implementation="flash_attention_2" if args.flash_attn else None,
         )
     else:
-        max_memory = None
-        if args.max_memory:
-            from accelerate.utils import get_max_memory
-            max_memory = get_max_memory()
-            # Apply the user-specified max memory to all GPUs
-            max_memory = {k: args.max_memory for k in max_memory.keys() if k not in ["cpu", "disk"]}
-
         model = model_loader.from_pretrained(
             args.model,
-#            trust_remote_code=True,
-            torch_dtype=precision,
+            trust_remote_code=True,
+            dtype=precision,
             low_cpu_mem_usage=True,
-            device_map=device_map,
+            device_map="auto",
             max_memory=max_memory,
+            torch_dtype=precision,
             quantization_config=quant_config,
-            attn_implementation=attn_impl,
+            attn_implementation="flash_attention_2" if args.flash_attn else None,
         )
     model.requires_grad_(False)
     if has_tied_weights(model_type):
         model.tie_weights()
 
     # point to base of language model
-    if hasattr(model, "language_model"):
-        layer_base = model.language_model.model
-    else:
-        layer_base = model.model
-        if hasattr(layer_base, "language_model"):
-            layer_base = layer_base.language_model
+    layer_base = model.model
+    if hasattr(layer_base,"language_model"):
+        layer_base = layer_base.language_model
+    # Verify we can access layers
+    if not hasattr(layer_base, "layers"):
+        raise ValueError(f"Could not find layers in model structure. Model base: {type(layer_base)}")
 
     # Load processor for vision models, tokenizer for text-only models
     processor = None
@@ -443,7 +428,7 @@ if __name__ == "__main__":
         try:
             processor = AutoProcessor.from_pretrained(
                 args.model,
-                device_map=device_map,
+                device_map="cuda",
                 padding=True,
             )
             tokenizer = processor.tokenizer
@@ -455,14 +440,14 @@ if __name__ == "__main__":
             tokenizer = AutoTokenizer.from_pretrained(
                 args.model,
 #                trust_remote_code=True,
-                device_map=device_map,
+                device_map="cuda",
                 padding=True,
             )
     else:
         tokenizer = AutoTokenizer.from_pretrained(
             args.model,
 #            trust_remote_code=True,
-            device_map=device_map,
+            device_map="cuda",
             padding=True,
         )
 
@@ -475,8 +460,3 @@ if __name__ == "__main__":
 
     print(f"Saving refusal information to {args.output}...")
     torch.save(results, args.output)
-
-    # Release VRAM so next measurement can start immediately
-    print("Unloading model and clearing memory...")
-    del model, tokenizer, processor, results
-    clean_up()
