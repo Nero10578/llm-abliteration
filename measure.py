@@ -407,9 +407,32 @@ if __name__ == "__main__":
             max_memory = {i: "90GiB" for i in range(num_gpus)}
             
             # If we are doing 4-bit quantization, force device_map to be a dict
-            # mapping everything to GPU 0 to bypass accelerate's auto-mapping
+            # mapping everything to GPUs to bypass accelerate's auto-mapping
             if args.quant_measure == "4bit":
-                device_map = "cuda:0"
+                # Manually construct a device map that splits the model across all GPUs
+                # This completely bypasses accelerate's broken memory estimation
+                device_map = {}
+                
+                # We need to know the number of layers to split them evenly
+                try:
+                    config = AutoConfig.from_pretrained(args.model)
+                    num_layers = config.num_hidden_layers
+                    
+                    # Map embeddings to GPU 0
+                    device_map["model.embed_tokens"] = 0
+                    
+                    # Split layers evenly across GPUs
+                    layers_per_gpu = num_layers // num_gpus
+                    for i in range(num_layers):
+                        gpu_idx = min(i // layers_per_gpu, num_gpus - 1)
+                        device_map[f"model.layers.{i}"] = gpu_idx
+                        
+                    # Map norm and head to the last GPU
+                    device_map["model.norm"] = num_gpus - 1
+                    device_map["lm_head"] = num_gpus - 1
+                except Exception as e:
+                    print(f"Warning: Could not auto-split layers: {e}")
+                    device_map = "auto"
 
     if hasattr(model_config, "quantization_config"):
         model = AutoModelForCausalLM.from_pretrained(
