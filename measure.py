@@ -296,6 +296,10 @@ if __name__ == "__main__":
 
     device = get_preferred_device()
     device_map = resolve_device_map()
+    
+    # Force device_map to only use GPUs to prevent CPU offloading
+    if device == "cuda":
+        device_map = "balanced" # or "sequential"
 
     model = args.model
     model_config = AutoConfig.from_pretrained(model)
