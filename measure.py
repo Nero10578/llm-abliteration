@@ -75,7 +75,7 @@ def welford_gpu_batched_multilayer_float32(
         )
         
         del batch_input, batch_mask
-        hidden_states = raw_output.hidden_states[max_new_tokens-1]  # Generation step
+        hidden_states = raw_output.hidden_states[max_tokens-1]  # Generation step
         del raw_output
 
         # Process layers with Welford in float32
