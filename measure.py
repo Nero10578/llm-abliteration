@@ -310,8 +310,6 @@ if __name__ == "__main__":
         # Fallback to bfloat16 on CUDA (if supported), otherwise float32 on MPS/CPU, float16 on CUDA
         if device == "cuda" and torch.cuda.is_bf16_supported():
             precision = torch.bfloat16
-        elif device == "cuda":
-            precision = torch.float16
         else:
             precision = torch.float32
 
@@ -370,7 +368,6 @@ if __name__ == "__main__":
             load_in_4bit=True,
             bnb_4bit_compute_dtype=precision,
             bnb_4bit_use_double_quant=True,
-            llm_int8_enable_fp32_cpu_offload=True,
         )
     elif qbit == "8bit":
         quant_config = BitsAndBytesConfig(
