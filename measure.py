@@ -297,9 +297,12 @@ if __name__ == "__main__":
     device = get_preferred_device()
     device_map = resolve_device_map()
     
-    # Force device_map to only use GPUs to prevent CPU offloading
-    if device == "cuda":
-        device_map = "balanced" # or "sequential"
+    # Force device_map to only use GPUs if we are doing 4-bit quantization
+    # to prevent accelerate from prematurely offloading to CPU
+    if args.quant_measure == "4bit" and device == "cuda":
+        num_gpus = torch.cuda.device_count()
+        if num_gpus > 0:
+            device_map = "balanced"
 
     model = args.model
     model_config = AutoConfig.from_pretrained(model)
