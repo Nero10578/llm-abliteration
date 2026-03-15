@@ -405,7 +405,11 @@ if __name__ == "__main__":
         if num_gpus > 0:
             # Tell accelerate we have 90GB per GPU, and 0 bytes for CPU
             max_memory = {i: "90GiB" for i in range(num_gpus)}
-            max_memory["cpu"] = "0GiB"
+            
+            # If we are doing 4-bit quantization, force device_map to be a dict
+            # mapping everything to GPU 0 to bypass accelerate's auto-mapping
+            if args.quant_measure == "4bit":
+                device_map = "auto"
 
     if hasattr(model_config, "quantization_config"):
         model = AutoModelForCausalLM.from_pretrained(
