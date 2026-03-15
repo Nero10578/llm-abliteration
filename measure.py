@@ -282,6 +282,12 @@ if __name__ == "__main__":
         default=False,
         help="Remove projection along harmless direction from refusal direction",
     )
+    parser.add_argument(
+        "--max-memory",
+        type=str,
+        default=None,
+        help="Max memory per GPU (e.g., '90GiB'). Prevents CPU offload issues with 4-bit quantization.",
+    )
 
     args = parser.parse_args()
 
@@ -370,7 +376,6 @@ if __name__ == "__main__":
             load_in_4bit=True,
             bnb_4bit_compute_dtype=precision,
             bnb_4bit_use_double_quant=True,
-            llm_int8_enable_fp32_cpu_offload=True,
         )
     elif qbit == "8bit":
         quant_config = BitsAndBytesConfig(
@@ -398,17 +403,25 @@ if __name__ == "__main__":
         model = AutoModelForCausalLM.from_pretrained(
             args.model,
 #            trust_remote_code=True,
-            dtype=precision,
+            torch_dtype=precision,
             device_map=device_map,
             attn_implementation=attn_impl,
         )
     else:
+        max_memory = None
+        if args.max_memory:
+            from accelerate.utils import get_max_memory
+            max_memory = get_max_memory()
+            # Apply the user-specified max memory to all GPUs
+            max_memory = {k: args.max_memory for k in max_memory.keys() if k not in ["cpu", "disk"]}
+
         model = model_loader.from_pretrained(
             args.model,
 #            trust_remote_code=True,
-            dtype=precision,
+            torch_dtype=precision,
             low_cpu_mem_usage=True,
             device_map=device_map,
+            max_memory=max_memory,
             quantization_config=quant_config,
             attn_implementation=attn_impl,
         )
