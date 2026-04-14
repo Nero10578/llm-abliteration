@@ -142,6 +142,7 @@ def calculate_kl_divergence(
     
     total_kl = 0.0
     batch_idx = 0
+    num_batches = 0
     
     for i in tqdm(range(0, len(prompts), batch_size), desc="Calculating KL divergence"):
         batch = prompts[i:i+batch_size]
@@ -152,6 +153,7 @@ def calculate_kl_divergence(
                 conversation=[{"role": "user", "content": prompt}],
                 add_generation_prompt=True,
                 tokenize=False,
+                enable_thinking=False,
             )
             for prompt in batch
         ]
@@ -173,13 +175,15 @@ def calculate_kl_divergence(
             p_probs = torch.nn.functional.softmax(orig_logits, dim=-1)
             q_log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
             
-            # Calculate KL divergence
+            # Calculate KL divergence (batchmean already averages over batch dimension)
             kl = torch.nn.functional.kl_div(q_log_probs, p_probs, reduction='batchmean')
             total_kl += kl.item()
         
         batch_idx += 1
+        num_batches += 1
     
-    avg_kl = total_kl / len(prompts)
+    # Average over number of batches (not prompts, since batchmean already averages per batch)
+    avg_kl = total_kl / num_batches if num_batches > 0 else 0.0
     return avg_kl
 
 
@@ -306,6 +310,7 @@ def main():
                 conversation=[{"role": "user", "content": prompt}],
                 add_generation_prompt=True,
                 tokenize=False,
+                enable_thinking=False,
             )
             for prompt in batch
         ]
